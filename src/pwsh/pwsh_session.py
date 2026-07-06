@@ -130,7 +130,7 @@ class PwshSession:
 
         pwsh_io.write_line(self.proc, self.token.wrap_command(command))
         found, raw, match = self.wait_token(timeout)
-        end = self._output_end(raw, match) if found else len(raw)
+        end = self._output_end(raw, start, match) if found else len(raw)
         output = extract_output(raw[start:end], self.token.start_marker)
 
         if not found:
@@ -147,7 +147,7 @@ class PwshSession:
         """
         start = self._scan_pos
         found, raw, match = self.wait_token(timeout)
-        end = self._output_end(raw, match) if found else len(raw)
+        end = self._output_end(raw, start, match) if found else len(raw)
         output = extract_output(raw[start:end], self.token.start_marker)
         if not found:
             return {"status": "running", "success": None,
@@ -156,12 +156,26 @@ class PwshSession:
         return {"status": "completed", "success": success,
                 "exit_code": code, "output": output}
 
-    @staticmethod
-    def _output_end(raw, match):
+    def _output_end(self, raw, start, match):
         """End of real output = start of the prompt LINE carrying the token, i.e.
-        the last newline before the token's OSC (drops the next prompt's base)."""
-        nl = raw.rfind("\n", 0, match.start())
-        return nl if nl != -1 else match.start()
+        the last newline before the token's OSC (drops the next prompt's base).
+
+        FLOORED at the end of this command's start marker: with EMPTY output
+        there is no newline between the marker and the prompt, so an unfloored
+        rfind lands on the newline BEFORE the marker, slicing the marker off and
+        sending extract_output down the fallback path -- which returned the
+        PSReadLine per-keystroke redraw echo as 'output' (the empty-result echo
+        bug). With the floor, empty output yields end == marker end, so
+        extract_output returns ''. The marker search is bounded to
+        [start, token) so a previous command's marker can never match."""
+        floor = 0
+        mk = raw.rfind(self.token.start_marker, start, match.start())
+        if mk != -1:
+            floor = mk + len(self.token.start_marker)
+        nl = raw.rfind("\n", floor, match.start())
+        if nl != -1:
+            return nl
+        return floor if floor > start else match.start()
 
     def send_input(self, text):
         """Feed a line to a running/interactive command (e.g. answer Read-Host)."""

@@ -1,19 +1,20 @@
 {
     "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-    "name": "io.github.TiM00R/powershell-terminal",
+    "name": "io.github.TiM00R/powershell-terminal-mcp",
     "version": "0.1.0",
     "title": "PowerShell Terminal MCP",
-    "description": "Persistent interactive local PowerShell 7 terminal (ConPTY) with AI/user shared control and dual-stream visibility",
+    "description": "Shared AI + user PowerShell session on Windows - execute commands, run scripts, automate your PC",
     "homepage": "https://github.com/TiM00R/powershell-terminal-mcp",
     "license": "MIT",
     "sourceRepositoryUrl": "https://github.com/TiM00R/powershell-terminal-mcp",
     "keywords": [
         "powershell",
         "windows",
-        "conpty",
         "terminal",
-        "local-terminal",
-        "automation"
+        "automation",
+        "conpty",
+        "claude",
+        "mcp"
     ],
     "packages": [
         {
@@ -22,15 +23,7 @@
             "version": "0.1.0",
             "transport": {
                 "type": "stdio"
-            },
-            "environmentVariables": [
-                {
-                    "name": "POWERSHELL_TERMINAL_ROOT",
-                    "description": "Root directory for config files and database",
-                    "isRequired": true,
-                    "isSecret": false
-                }
-            ]
+            }
         }
     ]
 }

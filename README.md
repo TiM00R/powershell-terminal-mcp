@@ -1,4 +1,4 @@
-<!-- mcp-name: powershell-terminal -->
+<!-- mcp-name: io.github.TiM00R/powershell-terminal-mcp -->
 # PowerShell Terminal
 
 **Shared AI + user PowerShell session on Windows — execute commands, run scripts, automate your PC**

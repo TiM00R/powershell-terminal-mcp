@@ -1,0 +1,16 @@
+# PowerShell Terminal MCP - Python Dependencies
+
+# Web UI Framework
+nicegui>=1.4.0
+
+# Local pseudo-terminal (ConPTY) for interactive PowerShell session
+pywinpty>=2.0.10
+
+# Configuration
+pyyaml>=6.0
+
+# MCP (Model Context Protocol) for Claude integration
+mcp>=1.0.0
+
+# ASGI components used by the web terminal (via nicegui)
+starlette>=0.27.0

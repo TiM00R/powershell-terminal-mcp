@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powershell-terminal-mcp"
+version = "0.1.0"
+description = "Shared AI + user PowerShell session on Windows — execute commands, run scripts, automate your PC"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "Tim", email = "tim00r@github.com"}
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "powershell",
+    "windows",
+    "conpty",
+    "terminal",
+    "local-terminal",
+    "automation",
+    "claude",
+    "ai"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Terminals",
+]
+
+dependencies = [
+    "nicegui>=1.4.0",
+    "pywinpty>=2.0.10",
+    "pyyaml>=6.0",
+    "mcp>=1.0.0",
+    "starlette>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/TiM00R/powershell-terminal-mcp"
+Repository = "https://github.com/TiM00R/powershell-terminal-mcp"
+
+[project.scripts]
+powershell-terminal-mcp = "src.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "config"]
+
+[tool.setuptools.package-data]
+src = ["*.json", "static/**/*"]
+config = ["*.yaml", "*.yaml.example"]

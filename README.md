@@ -384,6 +384,11 @@ python run_web.py                                            # launch web termin
 
 ## 📜 Version History
 
+### v0.1.1 (July 2026) — Bug fixes
+
+- ✅ Native exe output routing: native console output (`git`, `python`, `netstat`, `ipconfig`, etc.) now flows through the PowerShell success stream instead of `Write-Host`, restoring pipelines (`native | Select-String`), variable capture (`$x = native`), and file redirection (`native > file`). The hidden-window `ProcessStartInfo` behavior is unchanged, so native exes still run without popup windows.
+- ✅ Output extraction: quoted-argument and empty-result commands now return clean or empty output instead of echoing the typed input; the captured region is bounded to the current command's start marker.
+
 ### v0.1.0 (July 2026) — Initial public release
 
 - ✅ ConPTY-based persistent PowerShell 7 session via `pywinpty`
@@ -420,6 +425,6 @@ MIT
 
 ---
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 **Last Updated:** July 2026
 **Maintainer:** Tim

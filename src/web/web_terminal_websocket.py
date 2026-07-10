@@ -38,9 +38,12 @@ class WebSocketManager:
         with self._ws_lock:
             self.active_websockets.add(websocket)
 
-            # Start broadcast loop if this is the first connection
-            if len(self.active_websockets) == 1 and self._broadcast_task is None:
-                logger.info("Starting broadcast loop (first WebSocket connection)")
+            # Start (or restart) the broadcast loop if it is not currently
+            # running. The loop can exit if the first client connects before
+            # web_server_running was set True; the old set-once guard then left
+            # it dead forever, making every later tab blank. Restart on connect.
+            if self._broadcast_task is None or self._broadcast_task.done():
+                logger.info("Starting broadcast loop")
                 self._broadcast_task = asyncio.create_task(self._broadcast_output_loop())
 
         client_id = id(websocket)

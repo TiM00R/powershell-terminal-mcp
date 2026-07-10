@@ -384,6 +384,10 @@ python run_web.py                                            # launch web termin
 
 ## 📜 Version History
 
+### v0.1.2 (July 2026) — Web terminal fix
+
+- ✅ Duplicate tab fix: opening the terminal on a fresh session no longer spawns two browser tabs. `start()` now launches the server only; `open_terminal()` is the single place that opens a tab, and it always closes any existing tabs before opening exactly one. The output broadcast loop was hardened alongside this rework so a freshly opened tab reliably shows output.
+
 ### v0.1.1 (July 2026) — Bug fixes
 
 - ✅ Native exe output routing: native console output (`git`, `python`, `netstat`, `ipconfig`, etc.) now flows through the PowerShell success stream instead of `Write-Host`, restoring pipelines (`native | Select-String`), variable capture (`$x = native`), and file redirection (`native > file`). The hidden-window `ProcessStartInfo` behavior is unchanged, so native exes still run without popup windows.
@@ -425,6 +429,6 @@ MIT
 
 ---
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 **Last Updated:** July 2026
 **Maintainer:** Tim

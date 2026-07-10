@@ -60,18 +60,21 @@ class WebTerminalServer:
 
         logger.info(f"Starting web terminal on http://{self.config.server.host}:{self.config.server.port}")
 
+        # Mark running BEFORE the thread can accept connections. NiceGUI can
+        # start serving during the sleep() below; if a tab connects before this
+        # flag is True, the broadcast loop sees web_server_running == False and
+        # exits immediately, leaving every later tab blank/unresponsive.
+        self.shared_state.web_server_running = True
+
         self.thread = threading.Thread(target=self._run_web_server, daemon=True)
         self.thread.start()
 
         time.sleep(2)
-        self.shared_state.web_server_running = True
 
-        url = f"http://{self.config.server.host}:{self.config.server.port}"
-        try:
-            webbrowser.open(url)
-            logger.info(f"Opened browser to {url}")
-        except Exception as e:
-            logger.warning(f"Could not open browser: {e}")
+        # NOTE: do NOT open a browser here. start() launches the server only.
+        # open_terminal() is the single place that opens a tab, so we never
+        # get a duplicate tab from start()+open_terminal() firing together.
+        logger.info("Web terminal server started (browser opened by open_terminal)")
 
     def stop(self):
         """Stop the web terminal server and close all WebSocket connections"""
@@ -90,20 +93,22 @@ class WebTerminalServer:
 
     async def open_terminal(self):
         """
-        Close all existing terminal tabs and open a fresh one.
-        If web server not running, starts it (which opens browser automatically).
+        Close all existing terminal tabs, then open exactly one fresh tab.
+        Always runs supersede-then-open so we never stack a second tab.
         """
         if not self.is_running():
-            self.start()  # starts server and opens browser
-        else:
-            # Close all existing tabs
-            await self._ws_manager.broadcast_session_superseded()
-            # Open fresh tab first, then wait for WebSocket to connect
-            url = f"http://{self.config.server.host}:{self.config.server.port}"
-            webbrowser.open(url)
-            logger.info(f"Opened fresh terminal tab: {url}")
-            # Delay to allow browser tab to open and WebSocket to connect
-            await asyncio.sleep(2.0)
+            self.start()  # starts server only, does NOT open a browser
+        # Close any existing tabs first. Connected tabs run window.close()
+        # on the session_superseded message (same path used on WS drop).
+        await self._ws_manager.broadcast_session_superseded()
+        # Give existing tabs a moment to actually close before opening a new one.
+        await asyncio.sleep(0.5)
+        # Open exactly one fresh tab.
+        url = f"http://{self.config.server.host}:{self.config.server.port}"
+        webbrowser.open(url)
+        logger.info(f"Opened fresh terminal tab: {url}")
+        # Delay to allow browser tab to open and WebSocket to connect
+        await asyncio.sleep(2.0)
 
     def _run_web_server(self):
         """Run NiceGUI web server (runs in separate thread)"""

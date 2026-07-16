@@ -52,10 +52,13 @@ class CompletionToken:
 
     def prompt_function_snippet(self):
         """PowerShell that (a) wraps the existing prompt, appending the completion
-        token inside an INVISIBLE OSC sequence, and (b) installs a PSReadLine Enter
-        handler that emits an INVISIBLE OSC start marker right after each command is
-        accepted (so AI command echo stays clean). xterm.js swallows both OSCs;
-        detection scans the raw stream.
+        token inside an INVISIBLE OSC sequence, (b) resets the AI-batch wrap flag on
+        each return to the prompt, and (c) installs a PSReadLine Enter handler that
+        checks the line for a leading INVISIBLE batch sentinel (U+200B): if present,
+        it sets $global:__mcp_ai_batch and strips the sentinel (AI batch -> wrapped
+        capture); if absent, it accepts normally (default BYPASS -> stdin open, used
+        by humans and the AI interactive path). It then emits the INVISIBLE OSC start
+        marker. xterm.js swallows the OSCs; detection scans the raw stream.
 
         Idempotent (guarded by __mcp_installed). $? captured FIRST. ${ok}/${code}
         braces avoid the drive-qualified-variable parse error.
@@ -70,6 +73,10 @@ class CompletionToken:
             "function prompt {\n"
             "  $ok = $?\n"
             "  $code = $LASTEXITCODE\n"
+            # Reset AFTER capturing $? / $LASTEXITCODE so the assignment does not
+            # clobber them. Clears batch mode set by the Enter handler (U+200B
+            # sentinel), so the next command (which may be human-typed) defaults to bypass.
+            "  $global:__mcp_ai_batch = $false\n"
             "  if ($null -eq $code) { $code = 0 }\n"
             "  $base = ''\n"
             "  if ($global:__mcp_prev) {\n"
@@ -80,8 +87,28 @@ class CompletionToken:
             "}\n"
             "if (Get-Module PSReadLine) {\n"
             "  Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {\n"
+            # Detect the invisible AI-batch sentinel (U+200B) at the start of the
+            # line: set the wrap flag and strip that one char before accepting. No
+            # sentinel => default bypass (humans, AI interactive). $__l is $null on
+            # an empty line, so guard before StartsWith.
+            "    $__l = $null; $__c = 0\n"
+            "    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$__l, [ref]$__c)\n"
+            # Only strip the sentinel / emit the start marker when this Enter will
+            # actually SUBMIT (input syntactically complete). On the interior CRs of a
+            # multi-line block the input is IncompleteInput (e.g. an open brace), so we
+            # skip both -- doing them mid-continuation redraws the buffer and scrambles
+            # the block (lines reverse, cursor jumps, wedges at '>>'). AcceptLine()
+            # still continues-or-submits correctly on its own either way.
+            "    if ($null -eq $__l) { $__l = '' }\n"
+            "    $__toks = $null; $__errs = $null\n"
+            "    $null = [System.Management.Automation.Language.Parser]::ParseInput($__l, [ref]$__toks, [ref]$__errs)\n"
+            "    $__submit = -not ($__errs | Where-Object { $_.IncompleteInput })\n"
+            "    if ($__submit -and $__l.StartsWith([char]0x200B)) {\n"
+            "      $global:__mcp_ai_batch = $true\n"
+            "      [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, 1, '')\n"
+            "    }\n"
             "    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()\n"
-            "    [Console]::Write(" + start_osc + ")\n"
+            "    if ($__submit) { [Console]::Write(" + start_osc + ") }\n"
             "  }\n"
             "}\n"
         )

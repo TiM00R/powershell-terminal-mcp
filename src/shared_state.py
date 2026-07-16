@@ -3,7 +3,7 @@ Shared terminal state - singleton hub between the MCP server and the Web UI.
 
 Local PowerShell rewrite: owns ONE SessionOutput (PwshSession + OutputBuffer +
 SmartOutputFilter). The web layer talks to this via the same interface it always
-has (web_server_running, get_output(), _handle_output()), plus send_manual_input()
+has (web_server_running, get_output()), plus send_manual_input()
 and resize(). AI tools call run_command()/send_input()/etc.
 
 Removed vs the SSH version: ssh_manager, prompt_detector, machine_id, sudo preauth,
@@ -20,6 +20,7 @@ from config.config_loader import Config
 from pwsh.session_output import SessionOutput
 from db import Database, should_persist_output
 from utils.utils import is_error_output, extract_error_context, count_lines
+from web_replay import build_replay_tail
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,6 @@ class SharedTerminalState:
         with self.output_lock:
             self.output_queue.append(chunk)
 
-    def _handle_output(self, text: str):
-        """Inject text directly into the web stream (used by broadcast_raw_output)."""
-        with self.output_lock:
-            self.output_queue.append(text)
-
     def get_output(self) -> str:
         """Drain queued output for the web UI (polled by the broadcast loop).
         Passed through raw: the completion token and start marker ride inside OSC
@@ -131,6 +127,41 @@ class SharedTerminalState:
                 self.output_queue.clear()
                 return output
             return ""
+
+    def get_replay_tail(self) -> str:
+        """Screen content replayed to a newly connected web client (e.g. a reopened
+        tab) so it is not blank. Kept RAW (ANSI intact) so colors AND the
+        carriage-return line redraws render exactly as they did live; query/response
+        sequences are stripped so the reconnecting xterm doesn't reply into stdin.
+
+        Mode is server.replay_lines:
+          < 0  -> FULL buffer from session start. Faithful and cursor-safe (it is the
+                  exact byte stream xterm already processed); ignores the byte cap.
+          == 0 -> current prompt line only: no history, but still a usable prompt (no
+                  manual Enter needed).
+          > 0  -> last N physical lines, byte-capped by server.replay_max_bytes. Fast
+                  and small, but a cut landing inside stateful output (TUI, alt-screen,
+                  scroll region) can render imperfectly -- fine for plain history.
+        Returns '' only when there is nothing to show.
+        """
+        if not self.session_output:
+            return ""
+        max_lines, max_bytes = 40, 8192
+        try:
+            sc = self.config.server
+            max_lines = int(getattr(sc, "replay_lines", max_lines))
+            max_bytes = int(getattr(sc, "replay_max_bytes", max_bytes))
+        except Exception:
+            pass
+        try:
+            raw = self.session_output.get_raw_buffer() or ""
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        # The raw-tail construction (mode handling + query/response stripping) lives
+        # in web_replay.build_replay_tail; this method just supplies config + buffer.
+        return build_replay_tail(raw, max_lines, max_bytes)
 
     # --- web terminal input -------------------------------------------------
 
@@ -185,6 +216,40 @@ class SharedTerminalState:
 
     def send_input(self, text: str):
         self.session_output.send_input(text)
+
+    # --- AI interactive-input path ------------------------------------------
+
+    def run_command_interactive(self, command: str, idle_ms=None, max_s=None,
+                                expect=None):
+        result = self.session_output.run_command_interactive(
+            command, idle_ms=idle_ms, max_s=max_s, expect=expect)
+        self._log_interactive(command, result)
+        return result
+
+    def send_input_interactive(self, text: str, idle_ms=None, max_s=None,
+                               expect=None):
+        return self.session_output.send_input_interactive(
+            text, idle_ms=idle_ms, max_s=max_s, expect=expect)
+
+    def wait_interactive(self, idle_ms=None, max_s=None, expect=None):
+        return self.session_output.wait_interactive(
+            idle_ms=idle_ms, max_s=max_s, expect=expect)
+
+    def _log_interactive(self, command, result):
+        """Best-effort log of an interactive launch. Maps the {state,...} record onto
+        the command-log shape; success is unknown mid-session so treat a pending
+        prompt as non-error (only a non-zero EXITED code counts as failure)."""
+        if not self.database:
+            return
+        state = result.get("state")
+        exit_code = result.get("exit_code")
+        mapped = {
+            "output": result.get("output", "") or "",
+            "success": (exit_code == 0) if exit_code is not None else True,
+            "status": ("interactive:" + str(state)) if state else "interactive",
+            "exit_code": exit_code,
+        }
+        self._log_command(command, mapped, is_script=False)
 
     def send_interrupt(self):
         self.session_output.send_interrupt()

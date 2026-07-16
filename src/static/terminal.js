@@ -74,15 +74,8 @@
                     ws.close();
                     window.close();
                 }
-                else if (message.type === 'connection_update') {
-                    const label = document.querySelector('header .text-h6');
-                    if (label) label.textContent = 'Remote Terminal | Connected to: ' + message.server_name;
-                }
                 else if (message.type === 'connection') {
                     console.log('Connection status:', message.status);
-                }
-                else if (message.type === 'transfer_progress') {
-                    console.log('Transfer progress:', message.transfer_id);
                 }
                 
             } catch (e) {
@@ -94,57 +87,6 @@
             console.error('WebSocket error:', error);
         };
         
-        // ws.onclose = () => {
-        //     console.log('WebSocket closed');
-            
-        //     // Don't reconnect if this was intentional (page unload)
-        //     if (intentionalClose) {
-        //         console.log('WebSocket closed intentionally (page unload)');
-        //         return;
-        //     }
-            
-        //     term.writeln('\r\n✗ WebSocket disconnected');
-            
-        //     // Attempt reconnection
-        //     if (reconnectAttempts < maxReconnectAttempts) {
-        //         reconnectAttempts++;
-        //         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
-        //         term.writeln(`  Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
-                
-        //         setTimeout(connectWebSocket, delay);
-        //     } else {
-        //         term.writeln('  Max reconnection attempts reached. Please refresh the page.');
-        //     }
-        // };
-
-
-        
-        // ws.onclose = (event) => {
-        //     console.log('WebSocket closed', event.code, event.reason);
-
-        //     // If the user is navigating away / closing the tab, do nothing special
-        //     if (intentionalClose) {
-        //         console.log('WebSocket closed intentionally (page unload)');
-        //         return;
-        //     }
-
-        //     term.writeln('\r\n✗ WebSocket disconnected (server offline)');
-        //     term.writeln('  This tab will close automatically in 2 seconds...');
-
-        //     // Try to close the tab – in most browsers this works if the tab
-        //     // was opened programmatically (e.g., your Python app launched it).
-        //     setTimeout(() => {
-        //         try {
-        //             window.close();
-        //         } catch (e) {
-        //             console.warn('Unable to close window programmatically:', e);
-        //             // Fallback: at least stop sending input
-        //             term.writeln('\r\nYou can now close this browser tab.');
-        //         }
-        //     }, 2000);
-        // };
-
-
 
     ws.onclose = () => {
         console.log("WebSocket closed");
@@ -170,10 +112,6 @@
         // If close succeeded, do nothing further
         setTimeout(() => {}, 2000);
     };
-
-
-
-
 
     }
     

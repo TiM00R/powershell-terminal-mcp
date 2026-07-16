@@ -207,12 +207,31 @@ class ClaudeConfig:
 
 
 @dataclass
+class InteractiveConfig:
+    """Interactive-input (opt-in REPL/prompt) execution defaults.
+
+    idle_ms - buffer-idle window before classifying the tail. Higher than the pure
+              turn-latency value because an early classify costs more here.
+    max_s   - safety cap; a long-but-silent step returns RUNNING rather than hanging.
+    poll_ms - buffer poll cadence for the wait_interactive loop.
+    """
+    idle_ms: int = 600
+    max_s: int = 30
+    poll_ms: int = 30
+
+
+@dataclass
 class ServerConfig:
     """Web server configuration"""
     host: str = "localhost"
     port: int = 8080
     auto_open_browser: bool = True
     debug: bool = False
+    # Web terminal on-connect replay (fixes blank reopened tabs). replay_lines:
+    # -1 = full buffer (faithful, cursor-safe), 0 = current prompt line only,
+    # N = last N lines (byte-capped by replay_max_bytes).
+    replay_lines: int = 40
+    replay_max_bytes: int = 8192
 
 
 @dataclass

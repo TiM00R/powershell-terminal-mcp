@@ -34,7 +34,9 @@ And Claude does it — executing commands in your real PowerShell session, analy
 - **🪟 No Popup Windows** — Native console executables (`git`, `python`, `ipconfig`, full paths) run inside ConPTY without spawning new windows
 - **✂️ Dual-Stream Output** — You see full output in the browser; Claude receives a token-reduced summary
 - **✅ Reliable Completion Detection** — Exit codes and command completion detected via invisible prompt token in OSC escape sequences — no fragile regex matching
-- **⌨️ Interactive Commands** — Commands that prompt for input (`Read-Host`) work; Claude can send input and interrupt with Ctrl+C
+- **📝 Multi-Line Commands** — Send readable multi-line blocks (functions, loops, here-strings, piped chains); they execute as a single unit and render as a proper `>>` continuation block in the terminal, with variables persisting across the session
+- **⌨️ Interactive Programs** — REPLs, installers, and prompts (`python -i`, `node`, `ftp`, `Read-Host`) work end-to-end: Claude drives them turn-by-turn via a state machine (`AWAITING_INPUT` / `IDLE` / `RUNNING` / `EXITED`) with `send_input`, `poll`, and Ctrl+C. Interactive programs you type yourself in the web terminal work too.
+- **🔁 Reconnect Replay** — Reopen or refresh the web terminal and the current screen is restored **in color**, instead of a blank tab
 - **📚 Script Library** — Save and reuse named `.ps1` scripts; full output persisted on script runs
 - **🗄️ Command History** — Commands grouped into conversations and logged to SQLite with selective output persistence
 
@@ -56,6 +58,23 @@ PowerShell Terminal provides a **fully interactive terminal window** in your bro
 **The key advantage:** Complete visibility and control. Every command Claude runs appears in your terminal in real time. You're never in the dark — it's like sitting side-by-side with an assistant who types commands while you watch the screen.
 
 **Multi-Terminal Support:** Open multiple browser windows at `http://localhost:8090` — they all stay perfectly synchronized via WebSocket broadcast. Type in one terminal, see it in all terminals instantly.
+
+### Terminal Reconnect / History Replay
+
+When you reopen the web terminal (a reopened tab, a refresh, or `open_terminal()` after a disconnect), the new tab is sent the **current screen contents** so it isn't blank — the prompt, recent commands, and their output are restored **in color**, with the cursor correctly placed. This includes commands *you* typed, not just Claude's.
+
+Why it's needed: the browser only receives *new* output from the moment it connects, so before this a reopened tab was blank until you pressed Enter. On connect the server now replays the session's screen buffer (terminal query/response escape sequences are stripped, so the reconnecting terminal can't inject a stray reply into your next command).
+
+Configured under `server:` in `config.yaml`:
+
+| Setting | Behavior |
+|---------|----------|
+| `replay_lines: -1` | **Full buffer** from session start — faithful and cursor-safe (default). |
+| `replay_lines: 0` | Current prompt line only — no history, but still a usable prompt. |
+| `replay_lines: N` | Last **N** lines (byte-capped by `replay_max_bytes`). |
+| `replay_max_bytes` | Byte cap for the `N > 0` mode (ignored when `-1`). |
+
+Full replay is faithful because it re-feeds the exact byte stream the terminal already processed. A very long/noisy session makes reconnect parse more (seconds at most); switch to a bounded `N` if that ever matters.
 
 ### The Dual-Stream Architecture
 
@@ -87,6 +106,30 @@ PowerShell Terminal solves this completely:
 - A **PE header check** distinguishes console apps (CUI) from GUI apps — GUI apps like `notepad` and `code` open normally without blocking
 - Execution is handled via `System.Diagnostics.Process` with `CreateNoWindow=true` and redirected I/O, so output flows through ConPTY instead of a new window
 - Works for **short names** (`git`, `python`), **full paths** (`D:\tools\ffmpeg.exe`), and **any exe not known in advance**
+
+### Multi-Line Commands
+
+Claude can send **multi-line command blocks** — functions, `foreach` / `if` blocks, here-strings, or long piped chains — and they run as a single unit while rendering as a readable continuation block in your terminal:
+
+```
+PS D:\> if ($true) {
+>> $sum = 0
+>> 1..10 | ForEach-Object { $sum += $_ }
+>> $sum
+>> }
+55
+```
+
+Under the hood, a multi-line command is wrapped in an `if ($true) { ... }` block and submitted with carriage-return line separators — the same way a human paste enters the shell. This gives:
+
+- **One submission, one result** — the whole block completes as a single command with one exit code, so output capture stays clean (no partial/early return)
+- **Variables persist** — the block runs in the current scope, so any variables or functions defined inside remain available to later commands
+- **Accurate success** — an `if` block (unlike the `. { }` / `& { }` call operators) does not reset `$?`, so a failure in the block's last statement is reported correctly instead of masked
+- **Readable on screen** — the block shows as a normal `>>` continuation block instead of scrambling, reordering, or wedging the terminal
+
+Why it is needed: sending raw line-feed (`\n`) separators to the ConPTY desynchronizes PowerShell's multi-line redraw (lines reverse, the cursor jumps, the session sticks at `>>`). Matching what a paste does — carriage returns plus a single-submission wrapper — avoids that entirely.
+
+Single-line commands are unchanged. If you prefer one line, semicolons (`;`) still work. The `if ($true) {` header and `}` footer are the only additions the wrapper makes to the on-screen echo.
 
 ---
 
@@ -316,9 +359,10 @@ powershell_terminal/
 
 | Tool | Description |
 |------|-------------|
-| `execute_command(command, timeout?)` | Run a command; returns filtered output + exit code. Returns `status: "running"` on timeout. |
+| `execute_command(command, timeout?, interactive?, idle_ms?, max_s?, expect?)` | Run a command. Batch (default): filtered output + exit code, `status: "running"` on timeout. `interactive: true`: drive a REPL/prompt — returns `{state, output, exit_code, tail}` where state is `EXITED` / `AWAITING_INPUT` / `IDLE` / `RUNNING`. A multi-line `command` runs as a single block (shown as a `>>` continuation block; variables persist). |
 | `get_command_output(command_id, raw?)` | Fetch a prior command's output by id. |
-| `send_input(text)` | Answer a running interactive command, then wait for completion. |
+| `send_input(text, idle_ms?, max_s?, expect?)` | Send a line to a running/interactive program, then wait; returns `{state, output, exit_code, tail}`. |
+| `poll(idle_ms?, max_s?, expect?)` | Accumulate more output from a running/interactive command **without** sending input. |
 | `send_interrupt()` | Send Ctrl+C to the running command. |
 | `get_terminal_status()` | Session alive? Web terminal URL. |
 | `restart_session()` | Kill and respawn the PowerShell session (clears all state). |
@@ -347,6 +391,9 @@ powershell_terminal/
 
 `config.yaml` (project root) controls:
 - `server.host` / `server.port` — Web terminal address (default `localhost:8090`)
+- `server.replay_lines` — On-connect screen replay: `-1` full buffer (default), `0` prompt only, `N` last N lines
+- `server.replay_max_bytes` — Byte cap for the `N > 0` replay mode
+- `interactive.idle_ms` / `interactive.max_s` / `interactive.poll_ms` — Interactive-command tuning (defaults `600` / `30` / `30`)
 - Output filter thresholds and error patterns
 - SQLite database lives at `data\commands.db` in the project root
 
@@ -365,7 +412,9 @@ powershell_terminal/
 
 1. **Windows only** — ConPTY is a Windows API; Linux/Mac not supported
 2. **Interactive TUI apps not supported** — Commands that take over the terminal (e.g. `vim`, `htop`) will hang; use `-NonInteractive` alternatives
-3. **Single session** — One shared PowerShell session; no per-command isolation
+3. **`ssh` password auth via Claude** — Windows OpenSSH reads its password from the console (CONIN$), not stdin, so `ssh` doesn't prompt through the interactive path (silent exit 255). Use key auth / `BatchMode`, a scripted client (`ftp -s:`), or type the password yourself in the web terminal. stdin-based tools (`python -i`, `node`, `ftp`, `Read-Host`) work.
+4. **Single session** — One shared PowerShell session; no per-command isolation
+5. **Incomplete multi-line commands hang** — A multi-line command with unbalanced braces, parentheses, or quotes stays at the `>>` continuation prompt until it times out (returned as `status: "running"`) and must be cleared with `send_interrupt()`. This is inherent to PowerShell's continuation model, not specific to this tool — send syntactically complete blocks.
 
 ---
 
@@ -383,6 +432,15 @@ python run_web.py                                            # launch web termin
 ---
 
 ## 📜 Version History
+
+### v0.2.0 (July 2026) — Interactive operation, multi-line commands, reconnect replay
+
+- ✅ **Interactive command operation** — Claude can drive interactive programs (REPLs, installers, prompting tools like `python -i`, `node`, `ftp`, `Read-Host`) turn-by-turn. A state machine returns `{state, output, exit_code, tail}` with states `EXITED` / `AWAITING_INPUT` / `IDLE` / `RUNNING`; `execute_command` gains `interactive` / `idle_ms` / `max_s` / `expect`, `send_input` now waits on the same primitive, and a new `poll` tool accumulates more output. Per-step latency dropped from the old 60 s token timeout to sub-second (tool-side).
+- ✅ **Human interactive programs fixed** — The native-exe wrapper now bypasses (keeps stdin open) **by default**, so interactive programs you type yourself in the web terminal (`ftp`, `python -i`, …) prompt correctly instead of dying on EOF. AI *batch* commands still run wrapped (stdin closed, output captured) — marked invisibly by a zero-width sentinel, so nothing shows in the shared terminal and batch behavior is unchanged.
+- ✅ **Multi-line commands** — Multi-line command blocks now execute reliably and display as a readable `>>` continuation block instead of scrambling/reordering the terminal or wedging at `>>`. Each block is wrapped in an `if ($true) { }` and submitted with carriage-return separators (matching how a paste enters the shell), so it runs as one command — one exit code, clean output capture, variables persist in the session, and `$?`/`success` stays accurate (an `if` block doesn't reset `$?` the way `. { }` / `& { }` do). The Enter handler now only strips the batch sentinel / emits the output marker on a real submit, leaving interior continuation lines untouched (the prior scramble cause). Single-line commands are unchanged; `;` still works if you prefer one line.
+- ✅ **Terminal reconnect / history replay** — Reopening the web terminal restores the current screen in color (prompt + recent history, including your own typed commands) instead of a blank tab. Configurable via `server.replay_lines` (`-1` full / `0` prompt / `N` lines) and `server.replay_max_bytes`; terminal query/response escapes are stripped so a reconnect can't corrupt the next command.
+
+> **Breaking:** `send_input` now returns `{state, output, exit_code}` instead of the previous token-shaped result. The native-exe wrapper default flipped from wrap to bypass (AI batch opts in via the sentinel).
 
 ### v0.1.2 (July 2026) — Web terminal fix
 
@@ -429,6 +487,6 @@ MIT
 
 ---
 
-**Version:** 0.1.2
+**Version:** 0.2.0
 **Last Updated:** July 2026
 **Maintainer:** Tim

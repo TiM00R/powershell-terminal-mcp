@@ -31,6 +31,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config.config_loader import Config           # noqa: E402
 from shared_state import get_shared_state          # noqa: E402
 from web.web_terminal import WebTerminalServer      # noqa: E402
+from tool_schemas import build_tool_list            # noqa: E402  (tool declarations)
 
 sys.stdout = _original_stdout
 
@@ -60,116 +61,12 @@ class PowerShellTerminalMCP:
             self._started = True
 
     def _setup(self):
+        # list_tools advertises the tool SCHEMAS (declarations live in
+        # tool_schemas.build_tool_list); call_tool routes each invocation to
+        # _dispatch, which holds the behavior. Keep tool names in sync across both.
         @self.server.list_tools()
         async def list_tools():
-            return [
-                types.Tool(
-                    name="execute_command",
-                    description="Run a PowerShell command in the shared local session. "
-                                "Returns filtered (token-reduced) output plus exit code. "
-                                "On timeout returns status 'running' with partial output.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "PowerShell command"},
-                            "timeout": {"type": "number", "description": "Seconds (default 60)"},
-                        },
-                        "required": ["command"],
-                    },
-                ),
-                types.Tool(
-                    name="get_command_output",
-                    description="Get output for a previous command_id (raw=true for unfiltered).",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "command_id": {"type": "string"},
-                            "raw": {"type": "boolean"},
-                        },
-                        "required": ["command_id"],
-                    },
-                ),
-                types.Tool(
-                    name="send_input",
-                    description="Send a line of input to a running/interactive command "
-                                "(e.g. answer a prompt), then wait for completion.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {"text": {"type": "string"}},
-                        "required": ["text"],
-                    },
-                ),
-                types.Tool(
-                    name="send_interrupt",
-                    description="Send Ctrl+C to the foreground command.",
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                types.Tool(
-                    name="get_terminal_status",
-                    description="Session alive?, PowerShell version, web terminal URL.",
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                types.Tool(
-                    name="restart_session",
-                    description="Kill and respawn the PowerShell session (clears state).",
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                types.Tool(
-                    name="start_conversation",
-                    description="Start a new conversation (groups subsequent commands). "
-                                "Returns conversation_id.",
-                    inputSchema={"type": "object", "properties": {
-                        "label": {"type": "string"}}},
-                ),
-                types.Tool(
-                    name="end_conversation",
-                    description="End a conversation (defaults to the active one).",
-                    inputSchema={"type": "object", "properties": {
-                        "conversation_id": {"type": "integer"},
-                        "status": {"type": "string"}}},
-                ),
-                types.Tool(
-                    name="list_conversations",
-                    description="List recent conversations (history).",
-                    inputSchema={"type": "object", "properties": {
-                        "limit": {"type": "integer"}}},
-                ),
-                types.Tool(
-                    name="get_conversation_commands",
-                    description="List commands logged under a conversation_id.",
-                    inputSchema={"type": "object", "properties": {
-                        "conversation_id": {"type": "integer"}},
-                        "required": ["conversation_id"]},
-                ),
-                types.Tool(
-                    name="save_script",
-                    description="Save (or overwrite) a named PowerShell script (.ps1 content).",
-                    inputSchema={"type": "object", "properties": {
-                        "name": {"type": "string"}, "content": {"type": "string"}},
-                        "required": ["name", "content"]},
-                ),
-                types.Tool(
-                    name="list_scripts",
-                    description="List saved scripts.",
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                types.Tool(
-                    name="run_script",
-                    description="Run a saved script by name in the session. Full output is "
-                                "persisted.",
-                    inputSchema={"type": "object", "properties": {
-                        "name": {"type": "string"}, "timeout": {"type": "number"}},
-                        "required": ["name"]},
-                ),
-                types.Tool(
-                    name="open_terminal",
-                    description="Open (or re-open) the web terminal in the browser. "
-                                "Starts the web server if not running, then opens a fresh "
-                                "browser tab. Use this whenever the user asks to see or open "
-                                "the terminal.",
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-            ]
+            return build_tool_list()
 
         @self.server.call_tool()
         async def call_tool(name, arguments):
@@ -185,6 +82,23 @@ class PowerShellTerminalMCP:
 
         if name == "execute_command":
             cmd = args["command"]
+            if bool(args.get("interactive", False)):
+                ic = self.config.interactive
+                idle_ms = args.get("idle_ms", ic.idle_ms)
+                max_s = args.get("max_s", ic.max_s)
+                expect = args.get("expect")
+                result = await loop.run_in_executor(
+                    None, lambda: self.state.run_command_interactive(
+                        cmd, idle_ms=idle_ms, max_s=max_s, expect=expect))
+                cid = uuid.uuid4().hex[:12]
+                self._outputs[cid] = result
+                return _txt(json.dumps({
+                    "command_id": cid,
+                    "state": result.get("state"),
+                    "exit_code": result.get("exit_code"),
+                    "output": result.get("output", ""),
+                    "tail": result.get("tail", ""),
+                }, ensure_ascii=False))
             timeout = float(args.get("timeout", 60))
             result = await loop.run_in_executor(None, lambda: self.state.run_command(cmd, timeout))
             cid = uuid.uuid4().hex[:12]
@@ -208,11 +122,33 @@ class PowerShellTerminalMCP:
 
         if name == "send_input":
             text = args["text"]
-            result = await loop.run_in_executor(None, lambda: self._send_and_wait(text))
+            ic = self.config.interactive
+            idle_ms = args.get("idle_ms", ic.idle_ms)
+            max_s = args.get("max_s", ic.max_s)
+            expect = args.get("expect")
+            result = await loop.run_in_executor(
+                None, lambda: self.state.send_input_interactive(
+                    text, idle_ms=idle_ms, max_s=max_s, expect=expect))
             return _txt(json.dumps({
-                "status": result["status"],
-                "exit_code": result["exit_code"],
-                "output": result.get("filtered") or result.get("output", ""),
+                "state": result.get("state"),
+                "exit_code": result.get("exit_code"),
+                "output": result.get("output", ""),
+                "tail": result.get("tail", ""),
+            }, ensure_ascii=False))
+
+        if name == "poll":
+            ic = self.config.interactive
+            idle_ms = args.get("idle_ms", ic.idle_ms)
+            max_s = args.get("max_s", ic.max_s)
+            expect = args.get("expect")
+            result = await loop.run_in_executor(
+                None, lambda: self.state.wait_interactive(
+                    idle_ms=idle_ms, max_s=max_s, expect=expect))
+            return _txt(json.dumps({
+                "state": result.get("state"),
+                "exit_code": result.get("exit_code"),
+                "output": result.get("output", ""),
+                "tail": result.get("tail", ""),
             }, ensure_ascii=False))
 
         if name == "send_interrupt":
@@ -271,10 +207,6 @@ class PowerShellTerminalMCP:
             return _txt(json.dumps({"opened": True, "url": url}))
 
         raise ValueError("Unknown tool: %s" % name)
-
-    def _send_and_wait(self, text):
-        self.state.send_input(text)
-        return self.state.wait_more("", timeout=60)
 
     async def run(self):
         logger.info("PowerShell Terminal MCP ready.")

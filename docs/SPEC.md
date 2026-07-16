@@ -1,6 +1,9 @@
 # powershell-terminal-mcp - SPECIFICATION
 
-Status: DRAFT (pre-implementation). No application code written yet.
+Status: IMPLEMENTED - core product functionally complete (v0.2.0, unreleased). This
+spec documents the built system; see section 15 BUILD STATUS for the increment log,
+and sections 4A / 4B / 5A for the v0.2.0 additions (interactive operation, multi-line
+command handling, reconnect replay).
 Project folder: D:\powershell_terminal
 Copied from: remote-terminal-mcp (SSH) at D:\RodsProj\remote_terminal
 Pristine original (recovery source): D:\RodsProj\remote_terminal
@@ -127,6 +130,104 @@ $LASTEXITCODE for native commands, $? for pure-cmdlet operations, and the output
 filter's error detection as a third signal. The prompt token carries BOTH.
 
 ================================================================================
+## 4A. INTERACTIVE OPERATION (added v0.2.0)
+
+Section 4's token model detects completion for BATCH commands. Interactive programs
+(a REPL, an installer, a tool that prompts) never return to the prompt while they
+hold the foreground, so the token never fires; and the native-exe wrapper (section
+7) closed stdin, so they hit EOF and exited. v0.2.0 adds a second execution path.
+Full design: docs/INTERACTIVE-INPUT.md. Summary:
+
+DEFAULT = BYPASS. The native-exe wrapper now attaches the exe to the ConPTY with
+stdin OPEN by default; only AI BATCH commands opt IN to the stdin-closed capture
+wrapper. Rationale: a HUMAN typing in the web terminal cannot set a per-command flag
+(raw passthrough goes straight to the shell), so the DEFAULT must be the
+interactive-friendly one, or human-typed ftp/python/etc. die on EOF. Three classes:
+  - Human (raw passthrough)  -> bypass  (interactive exes work).
+  - AI interactive (opt-in)  -> bypass  (driven via the primitive below).
+  - AI batch (default)       -> wrapped (stdin closed, output captured; unchanged).
+
+AI-BATCH MARK (invisible): the AI batch path prepends a zero-width space (U+200B) to
+the command; the PSReadLine Enter handler detects it, sets $global:__mcp_ai_batch,
+strips the char, and the prompt resets the flag on each return. The wrapper/hook wrap
+ONLY when the flag is set. No visible marker. (LF/Ctrl+J and function-key signaling
+were tried and failed - raw bytes do not reliably register as the intended key.)
+
+INTERACTIVE PRIMITIVE: wait_interactive(idle_ms=600, max_s=30, expect=None) returns
+{state, output, tail, exit_code} where state is:
+  EXITED         - token fired; exit_code authoritative (terminal).
+  AWAITING_INPUT - expect matched, or idle >= idle_ms AND tail is prompt-shaped.
+  IDLE           - idle but tail not prompt-shaped (ambiguous; poll to accumulate).
+  RUNNING        - hit max_s while still growing (partial; poll to continue).
+The AI reads the returned output/prompt and drives the loop; IDLE is a latency
+signal, never an input trigger. Completeness is best-effort (prompt-shaped-tail gate
++ re-pollable loop). Interactive output is returned RAW (the AI token-reducing filter
+is skipped so the prompt is never hidden).
+
+TOOL SURFACE: execute_command gains interactive / idle_ms / max_s / expect; send_input
+now waits on the primitive and returns {state, output, exit_code, tail}; new poll tool
+(accumulate-more, no input); send_interrupt unchanged.
+
+CAVEAT: Windows OpenSSH reads its password from the console (CONIN$), not stdin, and
+does not engage as a bypassed grandchild under winpty's ConPTY - ssh password auth
+does not prompt via the interactive path (silent exit 255). Use key auth / BatchMode,
+a scripted client (ftp -s:file), or drive ssh in the top-level web terminal.
+stdin-based tools work: python -i, node, cmd, ftp, PowerShell Read-Host.
+
+v0.2.0 also added multi-line command handling (section 4B) and web-terminal on-connect
+history replay (a reopened tab restores the current screen instead of showing blank -
+section 5A).
+
+================================================================================
+## 4B. MULTI-LINE COMMAND HANDLING (added v0.2.0)
+
+PROBLEM. An AI batch command that spans lines was written to the ConPTY with its raw
+line-feed (\n) separators. Interior LF desyncs PSReadLine's multi-line redraw: the
+cursor jumps up, lines render in reverse, and the session wedges at a ">>"
+continuation prompt (the token never fires -> reported "running" / hang). A HUMAN
+paste of the same block does NOT hit this, because xterm.js sends line breaks as CR
+(\r), which goes through PSReadLine's normal continuation cleanly. (LF/Ctrl+J and
+bracketed-paste input markers were both tried and do NOT survive the pywinpty input
+path - they get mangled or dropped.)
+
+FIX (two parts):
+
+1. write_accept_batch wraps a multi-line command in an if-block and converts interior
+   newlines to CR:  if ($true) { <lines joined by \r> } + trailing CR.
+   - CR separators replicate a human paste (the proven-clean path); no LF scramble.
+   - The if-block is INCOMPLETE until its closing brace, so every interior CR is a
+     continuation (">>") and only the final CR submits: ONE accept -> ONE start marker
+     -> ONE completion token -> clean output capture. Without the wrapper, CR
+     separators would accept each top-level statement on its own (multiple tokens; the
+     AI would return after the first).
+   - An if-block runs in the CURRENT scope, so variables/functions defined in the block
+     persist into later commands - matching a shared interactive shell.
+   - CRITICAL vs '. { }' / '& { }': the call operators reset $? to True after they run,
+     masking a failing LAST statement (the completion token's success bool would come
+     back True on a failed block). An if-block does NOT reset $?, so success stays
+     accurate. This is why the wrapper is 'if ($true) { }', not the shorter '. { }'.
+   - Single-line commands are unchanged (no wrapper, no conversion).
+
+2. The PSReadLine Enter handler (completion_token.prompt_function_snippet) fires on
+   EVERY CR, including the interior continuation CRs of a block. Previously it always
+   stripped the U+200B batch sentinel (Replace(0,1,'')) and emitted the start marker;
+   doing either mid-continuation redraws the buffer and was itself a scramble source.
+   The handler now parses the current buffer (Parser.ParseInput) and only strips the
+   sentinel / emits the marker on a REAL submit (no IncompleteInput error, e.g. no
+   open brace). AcceptLine() still continues-or-submits correctly on its own either way.
+
+VISIBLE COST. The "if ($true) {" header and "}" footer are the only additions to the
+on-screen echo; the command's own lines render as-is in the ">>" block. AI output is
+unaffected (extraction anchors on the start marker emitted at the final submit). If a
+single line is preferred, ";" still works.
+
+TOUCHPOINTS: src/pwsh/pwsh_io.py (_has_newline + _wrap_multiline + write_accept_batch),
+src/completion_token.py (Enter handler completeness gate).
+
+EDGE CASES verified: multi-statement block with a native exe (netsh) inside; here-
+string (@"..."@) inside a block; single-statement multi-line pipeline (trailing pipes).
+
+================================================================================
 ## 5. COMPONENT MAP (grounded in the real copied tree)
 
 REUSE (mostly as-is):
@@ -176,6 +277,59 @@ database_servers, database_recipes are imported by mcp_server.py / shared_state.
 database_manager.py / tool registration. Deleting them breaks imports until the
 retool edits land. Since the project is not run until retool, this is acceptable;
 just do not expect it to import mid-deletion.
+
+================================================================================
+## 5A. WEB TERMINAL RECONNECT / REPLAY (added v0.2.0)
+
+PROBLEM. The web output path is drain-only: the reader feeds chunks to an output
+queue, get_output() drains it and broadcasts to whatever sockets are connected AT
+THAT MOMENT, then clears it. On connect, handle_websocket only sends a JSON welcome
+and enters the receive loop - it never sends the current screen. So a newly connected
+tab (a reopened tab, a refresh, open_terminal after a disconnect) receives only output
+produced AFTER it joined -> a BLANK tab until new output arrives (which is why pressing
+Enter, a prompt redraw, made it appear). Fresh MCP start worked only because the
+broadcast loop starts on the FIRST connect, so the init banner/prompt sat un-drained
+in the queue until that first tab arrived.
+
+FIX. On connect, before the receive loop, the server sends THIS socket only a reset
+(ESC[2J ESC[3J ESC[H) followed by shared_state.get_replay_tail() - the current screen
+reconstructed from the session's raw ConPTY buffer (PwshSession._buf, append-only,
+holds the whole session). Sent to the one new socket, so any other open tab is
+untouched.
+
+RAW, COLORED, CURSOR-SAFE. The tail is kept RAW (ANSI intact) so colors AND the
+carriage-return line redraws render exactly as they did live - xterm reprocesses the
+same bytes, so per-keystroke redraws overwrite instead of piling up. Cutting happens
+only on physical-line (\n) boundaries (\n never sits inside an escape); a leading
+ESC[0m clears any dangling color state.
+
+QUERY STRIP (important). Replaying raw bytes re-sends terminal QUERIES that pwsh /
+PSReadLine emitted at startup (DA `ESC[c`, DSR `ESC[6n`, DECRQM, XTVERSION, OSC color).
+The reconnecting xterm ANSWERS them into the shell's stdin, and the reply (observed as
+`ESC[?1;2c`) gets glued onto the next command -> ParserError. get_replay_tail strips
+these query/response sequences (CSI ...[cnR], ...$[py], >...q, and OSC ...;?) while
+KEEPING SGR colors and cursor redraws.
+
+MODES (config server.replay_lines):
+  -1 -> FULL buffer from session start. FAITHFUL and cursor-safe: it is the exact byte
+        stream xterm already processed, starting from the init screen-clear, so the
+        reconstructed cursor lands exactly at the live prompt - it CANNOT desync.
+        Ignores the byte cap. Default. Cost is only parse time (seconds at most; a
+        very long/noisy session parses more on each reconnect).
+   0 -> current prompt line only: no history, but a usable prompt (no manual Enter).
+   N -> last N physical lines, byte-capped by server.replay_max_bytes. Fast/small, but
+        a cut landing inside stateful output (TUI, alt-screen, scroll region) can
+        desync - fine for plain command history.
+
+WHY FULL CANNOT DESYNC vs. WHY A CAP CAN: full replay re-feeds from byte 0, so there
+is no cut point for terminal state to be wrong across. A line-capped tail is safe only
+if nothing before the cut set state the tail depends on (alt screen, scroll region,
+absolute positioning) - true for plain history, not guaranteed in general.
+
+TOUCHPOINTS: src/shared_state.py (get_replay_tail + _REPLAY_STRIP),
+src/pwsh/pwsh_session.py + session_output.py (get_raw_buffer),
+src/web/web_terminal_websocket.py (reset + tail sent on connect),
+src/config/* + config.yaml (server.replay_lines / replay_max_bytes).
 
 ================================================================================
 ## 6. PERSISTENCE (SQLite) - CORRECTED MODEL

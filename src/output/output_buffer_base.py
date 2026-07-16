@@ -76,20 +76,6 @@ class OutputBuffer:
         """
         return self.total_lines_added - len(self.lines)
 
-    def get_text(self, start: int = 0, end: Optional[int] = None) -> str:
-        """
-        Get text from buffer
-
-        Args:
-            start: Start line index (relative to current buffer)
-            end: End line index (None for all)
-
-        Returns:
-            Concatenated text
-        """
-        lines_list = list(self.lines)[start:end]
-        return '\n'.join(line.text for line in lines_list)
-
     def get_stats(self) -> dict:
         """
         Get buffer statistics

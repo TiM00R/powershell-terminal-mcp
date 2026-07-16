@@ -11,7 +11,7 @@ import logging
 from .config_dataclasses import (
     ConnectionConfig, RemoteConfig, CommandExecutionConfig, PromptDetectionConfig,
     BufferConfig, TerminalConfig, HistoryConfig, ShortcutsConfig, SearchConfig,
-    OutputModesConfig, ClaudeConfig, ServerConfig, LoggingConfig
+    OutputModesConfig, ClaudeConfig, ServerConfig, LoggingConfig, InteractiveConfig
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ class Config:
         self.shortcuts: Optional[ShortcutsConfig] = None
         self.search: Optional[SearchConfig] = None
         self.claude: Optional[ClaudeConfig] = None
+        self.interactive: Optional[InteractiveConfig] = None
         self.server: Optional[ServerConfig] = None
         self.logging: Optional[LoggingConfig] = None
 
@@ -185,13 +186,23 @@ class Config:
             error_patterns=claude_data.get('error_patterns')
         )
 
+        # Interactive-input execution configuration
+        interactive_data = self._raw_config.get('interactive', {})
+        self.interactive = InteractiveConfig(
+            idle_ms=interactive_data.get('idle_ms', 600),
+            max_s=interactive_data.get('max_s', 30),
+            poll_ms=interactive_data.get('poll_ms', 30)
+        )
+
         # Server configuration
         server_data = self._raw_config.get('server', {})
         self.server = ServerConfig(
             host=server_data.get('host', 'localhost'),
             port=server_data.get('port', 8080),
             auto_open_browser=server_data.get('auto_open_browser', True),
-            debug=server_data.get('debug', False)
+            debug=server_data.get('debug', False),
+            replay_lines=server_data.get('replay_lines', 40),
+            replay_max_bytes=server_data.get('replay_max_bytes', 8192)
         )
 
         # Logging configuration
@@ -216,6 +227,7 @@ class Config:
         self.shortcuts = ShortcutsConfig()
         self.search = SearchConfig()
         self.claude = ClaudeConfig()
+        self.interactive = InteractiveConfig()
         self.server = ServerConfig()
         self.logging = LoggingConfig()
 

@@ -57,6 +57,20 @@ class WebSocketManager:
                 'message': 'Terminal synchronized'
             })
 
+            # Replay the current screen to THIS newly connected client only, so a
+            # reopened tab shows the current prompt/history instead of blank. Reset
+            # (clear screen + scrollback + home) then the cleaned CRLF tail. Sent to
+            # this one socket only, so any other open tab is left untouched.
+            try:
+                replay = self.shared_state.get_replay_tail()
+                if replay:
+                    await websocket.send_json({
+                        'type': 'terminal_output',
+                        'data': '\x1b[2J\x1b[3J\x1b[H' + replay
+                    })
+            except Exception as e:
+                logger.debug(f"replay send failed: {e}")
+
             # FIXED: Keep connection alive and handle messages
             # Use receive() instead of async for loop
             while True:
@@ -143,10 +157,6 @@ class WebSocketManager:
 
         logger.info("Output broadcast loop stopped")
 
-    async def broadcast_raw_output(self, text: str):
-        """Inject raw text into output queue to be broadcast to all terminals"""
-        self.shared_state._handle_output(text)
-
     async def broadcast_session_superseded(self, targets=None):
         """
         Broadcast session superseded to connected clients.
@@ -165,29 +175,6 @@ class WebSocketManager:
                     await ws.send_json(message)
                 except Exception as e:
                     logger.debug(f"Failed to send session_superseded: {e}")
-                    disconnected.add(ws)
-
-            self.active_websockets -= disconnected
-
-    async def broadcast_connection_update(self, server_name: str):
-        """
-        Broadcast server connection change to all connected clients
-
-        Args:
-            server_name: Display name of newly connected server
-        """
-        message = {
-            'type': 'connection_update',
-            'server_name': server_name
-        }
-
-        with self._ws_lock:
-            disconnected = set()
-            for ws in self.active_websockets:
-                try:
-                    await ws.send_json(message)
-                except Exception as e:
-                    logger.debug(f"Failed to send connection update: {e}")
                     disconnected.add(ws)
 
             self.active_websockets -= disconnected

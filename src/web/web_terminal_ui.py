@@ -28,8 +28,6 @@ def create_terminal_page(ui, web_terminal_server):
     def index():
         """Main page with xterm.js terminal"""
 
-        connection_info = web_terminal_server.get_connection_display()
-
         # Header
         with ui.header().classes('items-center justify-between'):
             connection_label = ui.label(

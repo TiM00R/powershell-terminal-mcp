@@ -48,10 +48,6 @@ class WebTerminalServer:
         """Check if web server is running"""
         return self.shared_state.web_server_running
 
-    def get_connection_display(self) -> str:
-        """Get current connection info for display"""
-        return "PowerShell 7 (local)"
-
     def start(self):
         """Start the web terminal server in a background thread"""
         if self.is_running():
@@ -117,7 +113,6 @@ class WebTerminalServer:
             sys.stdout = sys.stderr
 
             from nicegui import ui, app
-            from starlette.responses import JSONResponse
             from starlette.websockets import WebSocket
 
             # Configure static files
@@ -136,13 +131,6 @@ class WebTerminalServer:
                 """WebSocket endpoint for bidirectional terminal communication"""
                 await websocket.accept()
                 await self._ws_manager.handle_websocket(websocket)
-
-            # API endpoint for connection info (still used by UI)
-            @app.get('/api/connection_info')
-            def handle_connection_info():
-                """Get current connection info"""
-                connection_info = self.get_connection_display()
-                return JSONResponse({'connection': connection_info})
 
             # Create terminal UI page
             create_terminal_page(ui, self)

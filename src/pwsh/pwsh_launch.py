@@ -45,6 +45,16 @@ NATIVE_WRAPPERS = (
     "  $__src = $__cmd.Source\n"
     "  $__fn = {\n"
     "    param()\n"
+    # Default is BYPASS: attach the real exe to the ConPTY with stdin OPEN. This is
+    # what humans (web terminal) and the AI interactive path get. Only an AI *batch*
+    # command sets $global:__mcp_ai_batch (via the U+200B sentinel + Enter handler) to opt into
+    # the stdin-closed ProcessStartInfo capture path below.
+    "    if (-not $global:__mcp_ai_batch) {\n"
+    "      $__b = (Get-Command $__exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source\n"
+    "      if (-not $__b) { $__b = $__src }\n"
+    "      & $__b @args\n"
+    "      return\n"
+    "    }\n"
     "    $__live = (Get-Command $__exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source\n"
     "    if (-not $__live) { $__live = $__src }\n"
     "    $psi = [System.Diagnostics.ProcessStartInfo]::new($__live)\n"
@@ -92,10 +102,17 @@ NATIVE_EXE_HOOK = (
     "if (-not $global:__mcp_hook_active) {\n"
     "  $global:__mcp_hook_active = $true\n"
     "  $global:__mcp_pe_cache = @{}\n"
+    "  $global:__mcp_ai_batch = $false\n"
     "  $ExecutionContext.InvokeCommand.PostCommandLookupAction = {\n"
     "    param($Name, $EventArgs)\n"
     "    try {\n"
     "      if (-not ($EventArgs.Command -is [System.Management.Automation.ApplicationInfo])) { return }\n"
+    # Default PASS THROUGH (stdin open): return without wrapping so PowerShell
+    # resolves the exe normally, attaching it to the ConPTY. Wrap ONLY when the
+    # AI-batch flag is set. The flag is reset by the prompt function after each
+    # command, so it stays true across a whole multi-exe batch line and clears
+    # before the next (possibly human) command.
+    "      if (-not $global:__mcp_ai_batch) { return }\n"
     "      $exe = $EventArgs.Command.Path\n"
     "      if (-not $global:__mcp_pe_cache.ContainsKey($exe)) {\n"
     "        try {\n"

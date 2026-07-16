@@ -87,6 +87,33 @@ class SessionOutput:
     def send_input(self, text):
         self.session.send_input(text)
 
+    # --- interactive-input path ---------------------------------------------
+    # Interactive output is returned RAW (contract: output = buffer slice). The
+    # SmartOutputFilter is a batch token-reducer and would risk hiding the very
+    # prompt the AI must read, so it is NOT applied here.
+
+    def run_command_interactive(self, command, idle_ms=None, max_s=None, expect=None):
+        kwargs = self._interactive_kwargs(idle_ms, max_s)
+        return self.session.run_command(command, interactive=True, expect=expect,
+                                        **kwargs)
+
+    def send_input_interactive(self, text, idle_ms=None, max_s=None, expect=None):
+        kwargs = self._interactive_kwargs(idle_ms, max_s)
+        return self.session.send_input_interactive(text, expect=expect, **kwargs)
+
+    def wait_interactive(self, idle_ms=None, max_s=None, expect=None):
+        kwargs = self._interactive_kwargs(idle_ms, max_s)
+        return self.session.poll_interactive(expect=expect, **kwargs)
+
+    @staticmethod
+    def _interactive_kwargs(idle_ms, max_s):
+        kwargs = {}
+        if idle_ms is not None:
+            kwargs["idle_ms"] = idle_ms
+        if max_s is not None:
+            kwargs["max_s"] = max_s
+        return kwargs
+
     def send_interrupt(self):
         self.session.send_interrupt()
 
@@ -102,8 +129,11 @@ class SessionOutput:
 
     # --- buffer access ------------------------------------------------------
 
-    def get_recent(self, n=100):
-        return self.buffer.get_text(start=-n)
+    def get_raw_buffer(self):
+        """Full raw ConPTY buffer (ANSI intact) from the session. Used by the web
+        layer to replay the current screen tail (incl. the in-progress prompt line)
+        to a newly connected client."""
+        return self.session.get_raw_buffer()
 
     def get_stats(self):
         return self.buffer.get_stats()

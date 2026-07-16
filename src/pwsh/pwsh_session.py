@@ -20,6 +20,8 @@ import logging
 from pwsh import pwsh_launch, pwsh_io
 from pwsh.pwsh_reader import ReaderThread
 from pwsh.output_clean import extract_output
+from pwsh.pwsh_interactive import (InteractiveMixin, INTERACTIVE_IDLE_MS,
+                                   INTERACTIVE_MAX_S)
 from completion_token import CompletionToken
 
 logger = logging.getLogger(__name__)
@@ -27,8 +29,13 @@ logger = logging.getLogger(__name__)
 SETTLE_TIMEOUT = 15.0
 DEFAULT_COMMAND_TIMEOUT = 60.0
 
+# The interactive-input primitive (wait_interactive + helpers; states EXITED /
+# AWAITING_INPUT / IDLE / RUNNING) lives in pwsh_interactive.InteractiveMixin, which
+# PwshSession mixes in below. INTERACTIVE_IDLE_MS / INTERACTIVE_MAX_S are imported
+# from there so run_command's interactive defaults match the primitive's.
 
-class PwshSession:
+
+class PwshSession(InteractiveMixin):
     def __init__(self, shell=None, on_output=None, dimensions=None):
         self._shell_pref = shell
         self.on_output = on_output            # callback(raw_chunk) for buffer/web
@@ -40,6 +47,7 @@ class PwshSession:
         self._buf = ""
         self._lock = threading.Lock()
         self._scan_pos = 0
+        self._interactive_start = 0     # slice pointer for the interactive primitive
         self._init_script = None
 
     # --- lifecycle ----------------------------------------------------------
@@ -56,6 +64,7 @@ class PwshSession:
 
         self._buf = ""
         self._scan_pos = 0
+        self._interactive_start = 0
         self.reader = ReaderThread(self.proc, self._on_data, pwsh_launch.READ_CHUNK)
         self.reader.start()
 
@@ -116,19 +125,37 @@ class PwshSession:
 
     # --- commands -----------------------------------------------------------
 
-    def run_command(self, command, timeout=DEFAULT_COMMAND_TIMEOUT):
+    def run_command(self, command, timeout=DEFAULT_COMMAND_TIMEOUT,
+                    interactive=False, idle_ms=INTERACTIVE_IDLE_MS,
+                    max_s=INTERACTIVE_MAX_S, expect=None):
         """Run an AI command; scan only output produced AFTER this point so any
         prior manual output is ignored (manual commands invisible to AI detection).
 
-        Returns dict: status (completed|running), success, exit_code, output.
-        On timeout (interactive prompt or long job) status='running' with partial
-        output; caller may send_input / send_interrupt / wait again.
+        Default (interactive=False): unchanged token-completion path. Returns dict
+        status (completed|running), success, exit_code, output. On timeout status is
+        'running' with partial output; caller may send_input / send_interrupt / wait.
+
+        interactive=True: launch on the default accept path (CR) so the exe is NOT
+        wrapped -- it attaches to the ConPTY with stdin open -- and wait on the
+        interactive primitive instead of the token-only wait. Returns the
+        interactive record {state, output, tail, exit_code}. See wait_interactive.
         """
         with self._lock:
             self._scan_pos = len(self._buf)
+            self._interactive_start = self._scan_pos
         start = self._scan_pos
 
-        pwsh_io.write_line(self.proc, self.token.wrap_command(command))
+        if interactive:
+            # Default accept (CR): exe bypasses the wrapper, attaches to the ConPTY
+            # with stdin open. Same path humans get in the web terminal.
+            pwsh_io.write_line(self.proc, self.token.wrap_command(command))
+            return self.wait_interactive(idle_ms=idle_ms, max_s=max_s, expect=expect)
+
+        # Batch accept: write_accept_batch prepends the U+200B sentinel; the Enter
+        # handler detects it on submit, sets $global:__mcp_ai_batch, and strips it, so
+        # this command's exe(s) take the stdin-closed capture wrapper. The flag is
+        # reset by the prompt after the command completes.
+        pwsh_io.write_accept_batch(self.proc, self.token.wrap_command(command))
         found, raw, match = self.wait_token(timeout)
         end = self._output_end(raw, start, match) if found else len(raw)
         output = extract_output(raw[start:end], self.token.start_marker)
@@ -180,6 +207,17 @@ class PwshSession:
     def send_input(self, text):
         """Feed a line to a running/interactive command (e.g. answer Read-Host)."""
         pwsh_io.write_line(self.proc, text)
+
+    # The interactive-input primitive (send_input_interactive, poll_interactive,
+    # wait_interactive, and the _interactive_* / _is_prompt_shaped / _proc_exit_code
+    # helpers) is provided by InteractiveMixin in pwsh_interactive.py. run_command's
+    # interactive branch above calls self.wait_interactive from there.
+
+    def get_raw_buffer(self):
+        """Snapshot of the full raw ConPTY buffer (ANSI included). Used by the web
+        layer to replay the current screen tail to a newly connected client."""
+        with self._lock:
+            return self._buf
 
     def send_manual_raw(self, data):
         """Human web-terminal keystrokes: raw passthrough (no newline added, no AI

@@ -1,9 +1,12 @@
 # powershell-terminal-mcp - SPECIFICATION
 
-Status: IMPLEMENTED - core product functionally complete (v0.2.0, unreleased). This
+Status: IMPLEMENTED - core product functionally complete (v0.3.0, unreleased). This
 spec documents the built system; see section 15 BUILD STATUS for the increment log,
 and sections 4A / 4B / 5A for the v0.2.0 additions (interactive operation, multi-line
-command handling, reconnect replay).
+command handling, reconnect replay). For the released tool surface and configuration
+reference, README.md is authoritative; the v0.3.0 changes (Windows/PS error patterns,
+get_command_history, database path + retention pruning, persistent active
+conversation, DB admin CLI, config/packaging cleanup) are listed in its changelog.
 Project folder: D:\powershell_terminal
 Copied from: remote-terminal-mcp (SSH) at D:\RodsProj\remote_terminal
 Pristine original (recovery source): D:\RodsProj\remote_terminal
@@ -364,8 +367,7 @@ SQLite (self-contained, survives restart):
     output_persisted, -- flag/reason: failed / script / flagged
     executed_at
   )
-- scripts(name, content, content_hash, created_at, updated_at, times_used,
-          last_used_at)
+- scripts(name, content, created_at, updated_at, times_used, last_used_at)
 
 Selective full-output persistence (improvement over SSH which stored everything):
 - ALWAYS store (small): command_text, exit_code, success, status, has_errors,
@@ -373,7 +375,10 @@ Selective full-output persistence (improvement over SSH which stored everything)
 - Store full output_text ONLY for: (1) failed commands (non-zero exit / $? false),
   (2) script runs, (3) commands explicitly flagged.
 - Ordinary successful commands: metadata + error_context only, no full output.
-- Retention: keep persisted output FOREVER (no pruning in v1).
+- Retention (updated v0.3.0): startup auto-prune drops conversations (and their
+  commands) whose last activity is older than config database.retention_days
+  (default 30; 0 disables). The active conversation is never pruned. Within the
+  retention window, persisted output is kept as-is.
 
 LIMITATION (explicit): full raw output of an ordinary successful command lives only
 in the in-memory buffer and is lost on MCP restart (not persisted by policy).
@@ -402,7 +407,14 @@ drop recipes AND batch tables/handlers completely (batch never used).
   use Invoke-WebRequest / Invoke-RestMethod (never curl). Standing rule.
 
 ================================================================================
-## 8. MCP TOOL SURFACE (v1)
+## 8. MCP TOOL SURFACE (v1 - SUPERSEDED)
+
+NOTE: this section is the original v1 plan. resume_conversation was never built;
+start_conversation takes label (not goal_summary); end_conversation takes status
+only (no user_notes); v0.2.0 added interactive/idle_ms/max_s/expect on
+execute_command plus the poll tool; v0.3.0 added get_command_history; open_terminal
+was added to the surface. The authoritative current tool list is README.md
+"MCP Tools Reference" (16 tools).
 
 - execute_command(command, timeout=...) -> AI command via token completion;
   returns command_id + filtered output (or partial + still-running on timeout).
@@ -435,11 +447,14 @@ filtered-by-default + raw=True escape hatch.
 Both may run simultaneously; separate every shared resource:
 - MCP server id (Claude Desktop config): powershell-terminal
 - Web terminal port: 8090 (remote-terminal uses 8080)
-- SQLite DB: %LOCALAPPDATA%\powershell-terminal\commands.db
-- Log dir: %LOCALAPPDATA%\powershell-terminal\logs
+- SQLite DB (as built): config database.path if set, else
+  <project_root>\data\commands.db (the %LOCALAPPDATA% location originally planned
+  here was not used)
+- Logging (as built): stderr only; no file log directory
 - Config: own config.yaml in D:\powershell_terminal
-- Root env var: POWERSHELL_TERMINAL_ROOT (was REMOTE_TERMINAL_ROOT; config.py +
-  server.json must be updated together)
+- Start-directory env var (as built): POWERSHELL_TERMINAL_HOME (optional; sets the
+  session's initial working directory, else $HOME). The POWERSHELL_TERMINAL_ROOT
+  variable originally planned here was not implemented.
 
 SWEEP: the copy carries old hardcoded values (8080, remote_terminal.db, old MCP
 name, log paths, REMOTE_TERMINAL_ROOT). Reassign every occurrence before first run.
@@ -539,7 +554,8 @@ D:\powershell_terminal\
 - No recipes.
 - No standalone (8081) UI.
 - No SFTP / file transfer.
-- No output pruning / retention limits.
+- No output pruning / retention limits. (Superseded in v0.3.0: startup auto-prune
+  via database.retention_days - see section 6.)
 - No real-time streaming of full output to the AI.
 
 ================================================================================

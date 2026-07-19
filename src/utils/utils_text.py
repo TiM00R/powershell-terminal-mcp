@@ -3,7 +3,6 @@ Text Utility Functions
 ANSI code handling, text processing, and line manipulation
 """
 
-import re
 from typing import List, Tuple
 
 

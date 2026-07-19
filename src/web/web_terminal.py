@@ -12,7 +12,6 @@ import time
 import logging
 import webbrowser
 from typing import Optional
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +134,6 @@ class WebTerminalServer:
             # Create terminal UI page
             create_terminal_page(ui, self)
 
-            # Run server with socket reuse enabled for immediate restart
-            import socket
             ui.run(
                 host=self.config.server.host,
                 port=self.config.server.port,

@@ -5,7 +5,7 @@ Intelligently filters command output to minimize token usage
 
 import logging
 from typing import Optional, Dict, List
-from utils.utils import count_lines, is_error_output, detect_command_type
+from utils import count_lines, is_error_output, detect_command_type
 
 # Import from split modules
 from .output_filter_decision import (
@@ -44,11 +44,12 @@ class SmartOutputFilter:
             auto_send_errors: Auto send error output to Claude
         """
         self.thresholds = thresholds or {
+            'install': 100,
             'system_info': 50,
-            'network_info': 100,
+            'network': 100,
             'file_listing': 50,
             'file_viewing': 100,
-            'install': 100,
+            'log_search': 100,
             'generic': 50
         }
 
@@ -58,8 +59,10 @@ class SmartOutputFilter:
         }
 
         self.error_patterns = error_patterns or [
-            'ERROR', 'FAILED', 'FATAL', 'Cannot',
-            'Permission denied', 'No such file', 'command not found'
+            'is not recognized', 'The term', 'CategoryInfo',
+            'FullyQualifiedErrorId', 'CommandNotFoundException',
+            'Exception', 'Cannot find path', 'Access is denied',
+            'ERROR', 'Error', 'FAILED', 'Failed', 'FATAL', 'Cannot', 'Aborting'
         ]
 
         self.auto_send_errors = auto_send_errors

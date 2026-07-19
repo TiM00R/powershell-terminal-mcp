@@ -15,17 +15,24 @@ import logging
 
 from pwsh.pwsh_session import PwshSession
 from completion_token import strip_ansi
-from output.output_buffer import OutputBuffer
+from output import OutputBuffer
 from output.output_filter import SmartOutputFilter
 
 logger = logging.getLogger(__name__)
 
 
 class SessionOutput:
-    """Owns a PwshSession plus its buffer and filter."""
+    """Owns a PwshSession plus its buffer and filter.
+
+    This is the seam where one pty stream is split for two very different
+    audiences, and it is the only layer that knows both exist.
+    """
 
     def __init__(self, shell=None, max_lines=10000, filter_config=None,
                  on_broadcast=None):
+        """Wire the trio together. on_broadcast is the web terminal's tap on the
+        live stream, injected rather than imported so this layer stays unaware
+        of the web server."""
         self.buffer = OutputBuffer(max_lines=max_lines)
         self.filter = SmartOutputFilter(**(filter_config or {}))
         self.on_broadcast = on_broadcast  # callback(raw_chunk) for the web terminal
@@ -34,16 +41,22 @@ class SessionOutput:
     # --- lifecycle ----------------------------------------------------------
 
     def start(self):
+        """Pass-through to the session; kept so callers never reach past this
+        facade to the PwshSession underneath."""
         return self.session.start()
 
     def restart(self):
+        """Replace the shell process while keeping this object (and the web
+        clients bound to it) alive."""
         # Fresh shell state; keep buffer history (human scrollback) intact.
         return self.session.restart()
 
     def close(self):
+        """Tear down the shell on shutdown."""
         self.session.close()
 
     def is_alive(self):
+        """Whether the shell process is still usable."""
         return self.session.is_alive()
 
     # --- output sink --------------------------------------------------------
@@ -85,6 +98,8 @@ class SessionOutput:
         return result
 
     def send_input(self, text):
+        """Answer a prompt hit during a batch command. No filtering happens here;
+        the reply is picked up by the following wait_more."""
         self.session.send_input(text)
 
     # --- interactive-input path ---------------------------------------------
@@ -93,20 +108,26 @@ class SessionOutput:
     # prompt the AI must read, so it is NOT applied here.
 
     def run_command_interactive(self, command, idle_ms=None, max_s=None, expect=None):
+        """Start a command expected to prompt, returning as soon as it settles
+        into a state the caller can act on."""
         kwargs = self._interactive_kwargs(idle_ms, max_s)
         return self.session.run_command(command, interactive=True, expect=expect,
                                         **kwargs)
 
     def send_input_interactive(self, text, idle_ms=None, max_s=None, expect=None):
+        """Answer the current prompt and report the next state."""
         kwargs = self._interactive_kwargs(idle_ms, max_s)
         return self.session.send_input_interactive(text, expect=expect, **kwargs)
 
     def wait_interactive(self, idle_ms=None, max_s=None, expect=None):
+        """Look again without sending anything, for a step that was still running."""
         kwargs = self._interactive_kwargs(idle_ms, max_s)
         return self.session.poll_interactive(expect=expect, **kwargs)
 
     @staticmethod
     def _interactive_kwargs(idle_ms, max_s):
+        """Forward only the timing knobs the caller actually set, so unset ones
+        fall through to the session's configured defaults instead of None."""
         kwargs = {}
         if idle_ms is not None:
             kwargs["idle_ms"] = idle_ms
@@ -115,6 +136,7 @@ class SessionOutput:
         return kwargs
 
     def send_interrupt(self):
+        """Ctrl+C into the pty -- works for both the batch and interactive paths."""
         self.session.send_interrupt()
 
     # --- human / passthrough ------------------------------------------------
@@ -125,6 +147,7 @@ class SessionOutput:
         self.session.send_manual_raw(data)
 
     def resize(self, cols, rows):
+        """Match the pty to the browser window so wrapping and redraws line up."""
         self.session.resize(cols, rows)
 
     # --- buffer access ------------------------------------------------------
@@ -136,4 +159,5 @@ class SessionOutput:
         return self.session.get_raw_buffer()
 
     def get_stats(self):
+        """Buffer usage, surfaced through the MCP status tool."""
         return self.buffer.get_stats()

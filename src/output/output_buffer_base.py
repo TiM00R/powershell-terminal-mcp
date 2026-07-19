@@ -1,7 +1,15 @@
 """
 Basic Output Buffer
-Manages terminal output with scrollback and line tracking
-FIXED: Added total_lines_added to handle buffer overflow
+
+The human side of the split stream: a bounded scrollback of everything the shell
+has printed, used for the web terminal and for status reporting. Bounded on
+purpose -- a long-lived session would otherwise grow without limit -- so old lines
+are dropped once max_lines is reached.
+
+Because dropping loses information, the buffer also counts every line it has ever
+seen (total_lines_added). The difference between that count and the current size
+is how callers can tell that overflow happened rather than silently mis-numbering
+lines.
 """
 
 import logging
@@ -16,19 +24,26 @@ class OutputLine:
     """Represents a single line of terminal output"""
 
     def __init__(self, text: str, timestamp: Optional[datetime] = None):
+        """Timestamped at creation so scrollback can show when output arrived."""
         self.text = text
         self.timestamp = timestamp or datetime.now()
 
     def __str__(self) -> str:
+        """The bare text, so a line can be joined or printed directly."""
         return self.text
 
     def __repr__(self) -> str:
+        """Truncated form for debugging, since output lines can be very long."""
         return f"OutputLine('{self.text[:50]}...')"
 
 
 class OutputBuffer:
     """
-    Manages terminal output with scrollback buffer
+    Bounded scrollback of the session's output, in whole lines.
+
+    Text arrives from the pty in arbitrary chunks that rarely align to line
+    boundaries, so incomplete text is held in current_output until its newline
+    shows up. Only complete lines enter the buffer.
     """
 
     def __init__(self, max_lines: int = 1000):

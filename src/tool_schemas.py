@@ -99,7 +99,7 @@ def build_tool_list():
         ),
         types.Tool(
             name="get_terminal_status",
-            description="Session alive?, PowerShell version, web terminal URL.",
+            description="Session alive? plus the web terminal URL.",
             inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
@@ -134,6 +134,18 @@ def build_tool_list():
             inputSchema={"type": "object", "properties": {
                 "conversation_id": {"type": "integer"}},
                 "required": ["conversation_id"]},
+        ),
+        types.Tool(
+            name="get_command_history",
+            description="Get commands executed within a date/time range, across all "
+                        "conversations. from_date/to_date accept 'YYYY-MM-DD' (whole "
+                        "day, inclusive) or 'YYYY-MM-DD HH:MM:SS'. Returns command "
+                        "rows ordered by time. Use for 'what did we run between X "
+                        "and Y' forensics.",
+            inputSchema={"type": "object", "properties": {
+                "from_date": {"type": "string"},
+                "to_date": {"type": "string"}},
+                "required": ["from_date", "to_date"]},
         ),
         # --- script store ---------------------------------------------------
         types.Tool(

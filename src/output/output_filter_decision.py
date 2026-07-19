@@ -5,7 +5,7 @@ Determines whether to send output and handles error contexts
 
 import logging
 from typing import List
-from utils.utils import (
+from utils import (
     count_lines, is_error_output, detect_command_type, extract_head_tail
 )
 

@@ -84,6 +84,3 @@ data/*.db-journal
 data/*.txt
 data/*.py
 
-# Root config files
-config.yaml
-hosts.yaml

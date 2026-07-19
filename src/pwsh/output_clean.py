@@ -33,6 +33,9 @@ def _normalize(text):
 
 
 def _strip_echo_fallback(text):
+    """Last-resort cleanup when the marker is missing: drop PSReadLine's '>>'
+    continuation lines, which are the most obvious echo artifact. Cruder than the
+    marker path and only reached in rare cases."""
     lines = text.split("\n")
     kept = [ln for ln in lines if not ln.lstrip().startswith(">>")]
     return "\n".join(kept).strip("\r\n")

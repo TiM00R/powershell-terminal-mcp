@@ -31,6 +31,8 @@ BATCH_SENTINEL = "\u200b"
 
 
 def _has_newline(text):
+    """Decide which submission path a command needs -- multi-line text has to be
+    wrapped and CR-separated (see the module note), single-line does not."""
     return ("\n" in text) or ("\r" in text)
 
 

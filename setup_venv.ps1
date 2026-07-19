@@ -13,9 +13,9 @@ Write-Host "Project Root: $scriptPath" -ForegroundColor White
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# The copied .venv is the OLD environment (has paramiko, lacks pywinpty).
+# A pre-existing .venv may be stale (wrong Python version, or missing pywinpty).
 if (Test-Path ".venv") {
-    Write-Host "Existing .venv found (old SSH environment)." -ForegroundColor Yellow
+    Write-Host "Existing .venv found." -ForegroundColor Yellow
     $answer = Read-Host "Delete and recreate it? (y/n)"
     if ($answer -eq "y") {
         Write-Host "Removing old .venv..." -ForegroundColor Yellow

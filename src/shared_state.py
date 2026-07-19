@@ -6,10 +6,9 @@ SmartOutputFilter). The web layer talks to this via the same interface it always
 has (web_server_running, get_output()), plus send_manual_input()
 and resize(). AI tools call run_command()/send_input()/etc.
 
-Removed vs the SSH version: ssh_manager, prompt_detector, machine_id, sudo preauth,
-SFTP transfer state, the background monitor_command (token completion replaces it),
-the SSH CommandRegistry monitoring, and the old ConversationState (the conversation
-tools are now DB-backed directly). The database is created in initialize().
+DB-backed command logging, conversation tools, history/prune, and the script store
+live in StateHistoryMixin (state_history.py); this class owns the session, the
+output plumbing, and the AI execution path. The database is created in initialize().
 """
 
 import threading
@@ -18,20 +17,23 @@ from typing import Optional
 
 from config.config_loader import Config
 from pwsh.session_output import SessionOutput
-from db import Database, should_persist_output
-from utils.utils import is_error_output, extract_error_context, count_lines
+from db import Database
 from web_replay import build_replay_tail
+from state_history import StateHistoryMixin
 
 logger = logging.getLogger(__name__)
 
 
-class SharedTerminalState:
+class SharedTerminalState(StateHistoryMixin):
     """Singleton shared state. One local PowerShell session, seen by AI and humans."""
 
     _instance = None
     _lock = threading.Lock()
 
     def __new__(cls):
+        """Singleton gate. The MCP server and the web server are separate entry
+        points in the same process; both must land on the SAME session, so
+        construction is funnelled through one instance."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -40,6 +42,8 @@ class SharedTerminalState:
         return cls._instance
 
     def __init__(self):
+        """Declare the slots only. Real construction is deferred to initialize()
+        because config is not available until the MCP server has loaded it."""
         if self._initialized:
             return
 
@@ -56,13 +60,24 @@ class SharedTerminalState:
     # --- initialization -----------------------------------------------------
 
     def initialize(self, config: Config):
-        """Build the session + buffer + filter. Does not start the pty yet."""
+        """Assemble the object graph once config exists: database, then the
+        session/buffer/filter stack. Split from __init__ so the singleton can be
+        imported freely before the server has read config.yaml.
+
+        Deliberately does NOT start the pty -- the shell comes up on first use
+        (see start_session), so importing the module never spawns a process.
+        """
         if self.session_output is not None:
             return
 
         self.config = config
 
-        self.database = Database()
+        db_path = None
+        try:
+            db_path = self.config.database.path
+        except Exception:
+            db_path = None
+        self.database = Database(path=db_path)
         self._active_conversation_id = None
 
         filter_config = {
@@ -82,6 +97,14 @@ class SharedTerminalState:
     # --- session lifecycle --------------------------------------------------
 
     def start_session(self) -> bool:
+        """Bring the PowerShell session up and attach it to a conversation.
+
+        Also the point where history housekeeping happens: an existing active
+        conversation is adopted (so a server restart continues the same thread
+        instead of fragmenting history), and retention pruning runs once here
+        rather than on a timer. Both are best-effort -- a history problem must
+        never stop the terminal from starting.
+        """
         if not self.session_output:
             return False
         # The init script clears the screen (wiping the dot-source echo) and prints
@@ -90,22 +113,35 @@ class SharedTerminalState:
         ok = self.session_output.start()
         if ok and self.database and self._active_conversation_id is None:
             try:
-                self._active_conversation_id = self.database.create_conversation(
-                    label="session")
+                existing = self.database.get_active_conversation()
+                if existing:
+                    self._active_conversation_id = existing["id"]
+                else:
+                    self._active_conversation_id = self.database.create_conversation(
+                        label="session")
             except Exception:
-                logger.exception("could not create conversation")
+                logger.exception("could not resolve active conversation")
+            try:
+                self.prune_history()
+            except Exception:
+                logger.exception("prune failed")
         return ok
 
     def restart_session(self) -> bool:
+        """Recycle the underlying pty after a hang or a wedged shell, keeping this
+        singleton (and the web clients bound to it) in place."""
         if not self.session_output:
             return False
         return self.session_output.restart()
 
     def close_session(self):
+        """Shutdown path, called when the MCP server goes away."""
         if self.session_output:
             self.session_output.close()
 
     def is_alive(self) -> bool:
+        """Liveness probe used by tools and the web layer before acting on a
+        session that may have exited underneath them."""
         return bool(self.session_output and self.session_output.is_alive())
 
     # --- output plumbing (web UI) -------------------------------------------
@@ -171,56 +207,46 @@ class SharedTerminalState:
             self.session_output.send_manual(data)
 
     def resize(self, cols: int, rows: int):
+        """Propagate the browser terminal's geometry to the pty so PowerShell wraps
+        and redraws to the window the user is actually looking at."""
         if self.session_output:
             self.session_output.resize(cols, rows)
 
     # --- AI command path ----------------------------------------------------
 
     def run_command(self, command: str, timeout: float = 60.0):
+        """The main AI entry point: run a command to completion and record it.
+
+        Execution is delegated to SessionOutput; the value added here is that
+        every AI-issued command lands in the DB, which is what makes history and
+        after-the-fact forensics possible.
+        """
         result = self.session_output.run_command(command, timeout=timeout)
         self._log_command(command, result, is_script=False)
         return result
 
-    def _log_command(self, command, result, is_script=False, flagged=False):
-        """Log a command with selective full-output persistence (spec section 6)."""
-        if not self.database:
-            return
-        try:
-            output = result.get("output", "") or ""
-            success = bool(result.get("success"))
-            status = result.get("status", "executed")
-            try:
-                patterns = self.config.claude.error_patterns or []
-            except Exception:
-                patterns = []
-            has_err = (not success) or is_error_output(output, patterns)
-            err_ctx = extract_error_context(output) if has_err else None
-            reason = should_persist_output(success, is_script=is_script, flagged=flagged)
-            self.database.log_command(
-                conversation_id=self._active_conversation_id,
-                command_text=command,
-                exit_code=result.get("exit_code"),
-                success=success,
-                status=status,
-                has_errors=has_err,
-                error_context=err_ctx,
-                line_count=count_lines(output),
-                output_text=(output if reason else None),
-                output_persisted=reason,
-            )
-        except Exception:
-            logger.exception("command logging failed")
-
     def wait_more(self, command: str, timeout: float = 60.0):
+        """Continue waiting on a command that already returned as still-running,
+        so a slow job can be polled instead of blocking one long tool call.
+        Deliberately not logged again -- the command was recorded by run_command.
+        """
         return self.session_output.wait_more(command, timeout=timeout)
 
     def send_input(self, text: str):
+        """Feed a line to a command that stopped for input during the normal
+        (non-interactive) path, e.g. an unexpected confirmation prompt."""
         self.session_output.send_input(text)
 
     # --- AI interactive-input path ------------------------------------------
 
     def run_command_interactive(self, command: str, idle_ms=None, max_s=None,
                                 expect=None):
+        """Opt-in path for programs that prompt (REPLs, installers, wizards).
+
+        Unlike run_command, this returns as soon as the program is judged to be
+        waiting, so the caller can answer it; the state machine lives in
+        SessionOutput. Logged so interactive work appears in history too.
+        """
         result = self.session_output.run_command_interactive(
             command, idle_ms=idle_ms, max_s=max_s, expect=expect)
         self._log_interactive(command, result)
@@ -228,84 +254,21 @@ class SharedTerminalState:
 
     def send_input_interactive(self, text: str, idle_ms=None, max_s=None,
                                expect=None):
+        """Answer an interactive prompt and wait for the next state (another
+        prompt, or exit). The turn-by-turn half of run_command_interactive."""
         return self.session_output.send_input_interactive(
             text, idle_ms=idle_ms, max_s=max_s, expect=expect)
 
     def wait_interactive(self, idle_ms=None, max_s=None, expect=None):
+        """Re-observe an interactive session without sending anything -- used when
+        a step returned RUNNING and the caller just needs to look again."""
         return self.session_output.wait_interactive(
             idle_ms=idle_ms, max_s=max_s, expect=expect)
 
-    def _log_interactive(self, command, result):
-        """Best-effort log of an interactive launch. Maps the {state,...} record onto
-        the command-log shape; success is unknown mid-session so treat a pending
-        prompt as non-error (only a non-zero EXITED code counts as failure)."""
-        if not self.database:
-            return
-        state = result.get("state")
-        exit_code = result.get("exit_code")
-        mapped = {
-            "output": result.get("output", "") or "",
-            "success": (exit_code == 0) if exit_code is not None else True,
-            "status": ("interactive:" + str(state)) if state else "interactive",
-            "exit_code": exit_code,
-        }
-        self._log_command(command, mapped, is_script=False)
-
     def send_interrupt(self):
+        """Ctrl+C. The escape hatch for a runaway or wedged command, letting the
+        session be reclaimed without tearing down the pty."""
         self.session_output.send_interrupt()
-
-    # --- conversation tools (DB-backed) -------------------------------------
-
-    def start_conversation(self, label=None):
-        if not self.database:
-            return None
-        cid = self.database.create_conversation(label)
-        self._active_conversation_id = cid
-        return cid
-
-    def end_conversation(self, conversation_id=None, status="completed"):
-        cid = conversation_id or self._active_conversation_id
-        if self.database and cid:
-            self.database.end_conversation(cid, status)
-        return cid
-
-    def list_conversations(self, limit=20):
-        return self.database.list_conversations(limit) if self.database else []
-
-    def get_conversation_commands(self, conversation_id):
-        return (self.database.get_conversation_commands(conversation_id)
-                if self.database else [])
-
-    # --- script store -------------------------------------------------------
-
-    def save_script(self, name, content):
-        if self.database:
-            self.database.save_script(name, content)
-        return name
-
-    def list_scripts(self):
-        return self.database.list_scripts() if self.database else []
-
-    def run_script(self, name, timeout=120.0):
-        import os
-        import tempfile
-        sc = self.database.get_script(name) if self.database else None
-        if not sc:
-            return {"status": "error", "error": "unknown script: " + name}
-        fd, path = tempfile.mkstemp(suffix=".ps1", prefix="pwsh_script_")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(sc["content"])
-        try:
-            result = self.session_output.run_command("& '" + path + "'", timeout=timeout)
-            self._log_command("run_script:" + name, result, is_script=True)
-            if self.database:
-                self.database.touch_script(name)
-            return result
-        finally:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
 
 
 # Global shared state
@@ -313,5 +276,6 @@ _shared_state = SharedTerminalState()
 
 
 def get_shared_state() -> SharedTerminalState:
-    """Get the global shared state instance."""
+    """Accessor every module uses to reach the one live session. Importing this
+    rather than constructing SharedTerminalState keeps the singleton honest."""
     return _shared_state

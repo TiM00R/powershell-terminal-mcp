@@ -317,8 +317,7 @@ Claude  <--stdio JSON-RPC-->  mcp_server.py
 
 ```
 powershell_terminal/
-├── config/
-│   └── config.yaml                 # Web port, filter thresholds, error patterns
+├── config.yaml                     # Web port, filter thresholds, error patterns, DB retention
 ├── data/
 │   └── commands.db                 # SQLite: conversations, commands, scripts
 ├── scripts/                        # Headless test harnesses
@@ -331,13 +330,16 @@ powershell_terminal/
 │   ├── pwsh/                       # PowerShell session (ConPTY)
 │   │   ├── pwsh_launch.py          # Shell spawn, init script, native exe hook
 │   │   ├── pwsh_session.py         # Session lifecycle, run_command, send_input
-│   │   ├── session_output.py       # Dual-stream wrapper (raw + filtered)
-│   │   └── completion_token.py     # Prompt token and OSC escape injection
+│   │   ├── pwsh_interactive.py     # Interactive-input state machine (mixin)
+│   │   └── session_output.py       # Dual-stream wrapper (raw + filtered)
 │   ├── web/
 │   │   └── web_terminal.py         # NiceGUI + xterm.js web terminal
+│   ├── completion_token.py         # Prompt token and OSC escape injection
 │   ├── db.py                       # SQLite database layer
 │   ├── mcp_server.py               # MCP server entry point (all tools)
-│   └── shared_state.py             # Global session hub
+│   ├── shared_state.py             # Global session hub (session + execution path)
+│   └── state_history.py            # DB facade: logging, conversations, history, scripts
+├── db_admin.py / db-admin.ps1      # DB maintenance CLI (list/show/prune/vacuum/delete)
 ├── setup_venv.ps1                  # One-command environment setup
 └── run_web.py                      # Launch web terminal standalone (no Claude)
 ```
@@ -384,6 +386,7 @@ powershell_terminal/
 | `end_conversation(conversation_id?, status?)` | End the active (or specified) conversation. |
 | `list_conversations(limit?)` | List recent conversations. |
 | `get_conversation_commands(conversation_id)` | Commands logged under a conversation. |
+| `get_command_history(from_date, to_date)` | Commands across all conversations in a date/time range (`YYYY-MM-DD` whole day, or `YYYY-MM-DD HH:MM:SS`). |
 
 ---
 
@@ -394,8 +397,9 @@ powershell_terminal/
 - `server.replay_lines` — On-connect screen replay: `-1` full buffer (default), `0` prompt only, `N` last N lines
 - `server.replay_max_bytes` — Byte cap for the `N > 0` replay mode
 - `interactive.idle_ms` / `interactive.max_s` / `interactive.poll_ms` — Interactive-command tuning (defaults `600` / `30` / `30`)
-- Output filter thresholds and error patterns
-- SQLite database lives at `data\commands.db` in the project root
+- Output filter thresholds (keyed by command type: `install`, `system_info`, `network`, `file_listing`, `file_viewing`, `log_search`, `generic`) and PowerShell error patterns
+- `database.path` — Override the SQLite location (default `data\commands.db`, relative to the install); set an absolute path to pin it across installs / working directories
+- `database.retention_days` — Startup auto-prune: drop conversations whose last activity is older than N days (default `30`, `0` disables); the active conversation is never pruned
 
 ---
 
@@ -432,6 +436,17 @@ python run_web.py                                            # launch web termin
 ---
 
 ## 📜 Version History
+
+### v0.3.0 (July 2026) — Windows-native config, command-history range queries, internal cleanup
+
+- ✅ **Windows/PowerShell output filter** — `error_patterns` rewritten for PowerShell / .NET / Windows console error text (e.g. `is not recognized`, `CategoryInfo`, `CommandNotFoundException`). Fixed a threshold-key bug where `network` and `log_search` commands silently fell back to the `generic` threshold (`network_info` → `network`, added `log_search`).
+- ✅ **New tool: `get_command_history(from_date, to_date)`** — retrieve commands across all conversations within a date/time range (`YYYY-MM-DD` for a whole day, or `YYYY-MM-DD HH:MM:SS`).
+- ✅ **Database config + retention** — `database.path` pins the SQLite file across installs / working directories; `database.retention_days` auto-prunes old conversations on startup (default `30`, `0` disables). The active conversation is never pruned.
+- ✅ **Persistent active conversation** — a server restart now reuses the newest active conversation instead of starting a fresh one each time; a new conversation is created only on first run or when you explicitly start one.
+- ✅ **DB maintenance CLI** — `db-admin.ps1` / `db_admin.py` for occasional upkeep: `list`, `show`, `clean-stale`, `delete-ids`, `delete-commands`, `delete-script`, `prune`, `vacuum`, `integrity`. Destructive commands are dry-run by default (require `--yes`).
+- ✅ **Single-source config + correct defaults** — the app now uses one `config.yaml` at the repo root; a stale duplicate `config/config.yaml` (which the build was shipping instead of the real one) was removed. The web-terminal port default is `8090` everywhere, replacing an `8080→8090` override that also silently ignored a user's explicit port. Packaging fixed: `pyproject.toml` / `MANIFEST.in` no longer reference the removed `config/` package or nonexistent prototype files.
+- ✅ **Remote-terminal leftover sweep** — corrected artifacts carried over from the prototype fork: the shipped `claude_desktop_config_example.json` (was registering `remote-terminal` with the wrong executable and `REMOTE_TERMINAL_ROOT` env var), a stale "SSH output" docstring in the web layer, and the SSH/paramiko fork-migration wording in `setup_venv.ps1`.
+- ✅ **Internal cleanup** — removed vestigial remote-terminal configuration (9 unused config sections + the dead `output_modes` block); split `shared_state.py`'s DB layer into a `state_history.py` mixin; consolidated the `utils` / `output` package facades; removed dead modules, unused imports, and a stale package `__init__` carried over from the prototype.
 
 ### v0.2.0 (July 2026) — Interactive operation, multi-line commands, reconnect replay
 
@@ -487,6 +502,6 @@ MIT
 
 ---
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Last Updated:** July 2026
 **Maintainer:** Tim

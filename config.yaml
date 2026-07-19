@@ -1,0 +1,92 @@
+# PowerShell Terminal MCP - Configuration File
+# Package version is tracked in pyproject.toml / server.json (see README changelog).
+# Active sections: buffer, claude, interactive, server, database.
+
+# Output Buffer Configuration
+buffer:
+  max_lines: 500
+  cleanup_on_full: true
+
+# Claude AI Integration Configuration
+claude:
+  auto_send_errors: true
+
+  # Output thresholds by command type (keys must match detect_command_type()).
+  # If a command's output exceeds its threshold (in lines), it gets smart-filtered.
+  thresholds:
+    install: 100
+    system_info: 50
+    network: 100
+    file_listing: 50
+    file_viewing: 100
+    log_search: 100
+    generic: 50
+
+  # Truncation settings (head/tail lines kept when generic output is truncated)
+  truncation:
+    head_lines: 30
+    tail_lines: 20
+
+  # Error patterns to detect (case-sensitive substring match). Tuned for
+  # PowerShell / .NET / Windows console error text.
+  error_patterns:
+    - "is not recognized"
+    - "The term"
+    - "CategoryInfo"
+    - "FullyQualifiedErrorId"
+    - "CommandNotFoundException"
+    - "ObjectNotFound"
+    - "ItemNotFoundException"
+    - "UnauthorizedAccessException"
+    - "Exception"
+    - "at line:"
+    - "Cannot find path"
+    - "does not exist"
+    - "Access is denied"
+    - "ERROR"
+    - "Error"
+    - "error:"
+    - "FAILED"
+    - "Failed"
+    - "failed"
+    - "FATAL"
+    - "Fatal"
+    - "Cannot"
+    - "cannot"
+    - "Denied"
+    - "denied"
+    - "Unable to"
+    - "unable to"
+    - "Could not"
+    - "could not"
+    - "Aborting"
+
+# Interactive-Input Execution Configuration
+# Opt-in per invocation (execute_command interactive=true). Controls the
+# wait_interactive primitive that drives REPLs / interactive prompts.
+interactive:
+  idle_ms: 600        # buffer-idle window before classifying the tail (ms)
+  max_s: 30           # safety cap before returning RUNNING (seconds)
+  poll_ms: 30         # buffer poll cadence for the wait loop (ms)
+
+# Web Server Configuration
+server:
+  host: "localhost"
+  port: 8090           # MCP web terminal (8090 to avoid colliding with remote-terminal's 8080)
+  auto_open_browser: true
+  # On-connect screen replay (fixes blank/mis-positioned reopened tabs). When a
+  # web client connects it is sent the current screen (colored, faithful).
+  #   -1 = full buffer from session start (cursor-safe, cannot desync; slower on a
+  #        huge session), 0 = current prompt line only (no history, still a prompt),
+  #   N  = last N lines (fast/small, byte-capped, may desync inside TUI/alt-screen).
+  replay_lines: -1
+  replay_max_bytes: 8192   # byte cap; applies to the N>0 mode only (ignored when -1)
+
+# Local SQLite command store (history / emergency forensics).
+# path: null -> use <project_root>/data/commands.db (default, relative to install).
+#       set an ABSOLUTE path to pin the DB across pip installs / CWD changes.
+database:
+  path: null
+  # startup auto-prune: drop conversations (and their commands) whose last activity
+  # is older than this many days. 0 disables pruning. Active conversation is safe.
+  retention_days: 30

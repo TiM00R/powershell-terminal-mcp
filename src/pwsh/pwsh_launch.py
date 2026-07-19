@@ -157,6 +157,9 @@ BANNER_LINES = (
 
 
 def _banner_ps():
+    """Render the banner as Write-Host statements. Written into the init script so
+    the greeting appears without a command echo, and ConPTY counts the rows -- that
+    is what puts the first prompt in the right place in a freshly opened terminal."""
     out = "".join("Write-Host '" + line + "'\n" for line in BANNER_LINES)
     return out + "Write-Host ''\n"
 

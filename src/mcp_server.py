@@ -1,9 +1,16 @@
 """
-mcp_server.py - PowerShell Terminal MCP server (lean v1).
+mcp_server.py - PowerShell Terminal MCP server.
 
-Exposes the local pwsh session to an MCP client. Wires the core tools directly to
-the SharedTerminalState hub (PwshSession + buffer + filter + web terminal).
-Conversation/script/DB tools come in a later increment.
+The outermost layer: it speaks MCP to the client (Claude Desktop) over stdio and
+translates each tool call into a method on SharedTerminalState. It owns no terminal
+logic of its own -- everything it does is argument handling, JSON shaping, and
+keeping the blocking session work off the event loop.
+
+Two details here are load-bearing:
+  - stdout IS the JSON-RPC channel, so it is redirected to stderr around the
+    imports; a stray print from a dependency would otherwise corrupt the protocol.
+  - Session startup is lazy (_ensure_started), so the shell and web terminal only
+    appear when a tool is actually used, not when the client loads the server.
 """
 
 import asyncio
@@ -37,16 +44,29 @@ sys.stdout = _original_stdout
 
 
 def _txt(s):
+    """Wrap a string in the content shape MCP expects, so every tool branch below
+    can end in one short line."""
     return [types.TextContent(type="text", text=s)]
 
 
 class PowerShellTerminalMCP:
+    """Binds the MCP protocol surface to the shared terminal session.
+
+    Holds the tool dispatch table and the per-command result cache that makes
+    get_command_output possible after a filtered reply.
+    """
+
     def __init__(self):
+        """Assemble the server: load config, build the session hub and web server,
+        and register the MCP handlers. Nothing is started yet -- see
+        _ensure_started.
+
+        _outputs caches each command's full result by id, which is what lets the AI
+        ask for raw output later after receiving a token-reduced version.
+        """
         self.state = get_shared_state()
         config_file = SCRIPT_DIR.parent / "config.yaml"
         self.config = Config(str(config_file))
-        if self.config.server.port == 8080:
-            self.config.server.port = 8090
         self.state.initialize(self.config)
         self.web_server = WebTerminalServer(self.state, self.config)
         self.server = Server("powershell-terminal")
@@ -55,21 +75,32 @@ class PowerShellTerminalMCP:
         self._setup()
 
     def _ensure_started(self):
+        """Bring up the shell and web terminal on first tool use.
+
+        Deferred rather than done in __init__ so merely loading the server (which
+        the client does at launch) never spawns a PowerShell process or pops a
+        browser window.
+        """
         if not self._started:
             self.state.start_session()
             self.web_server.start()  # opens the shared web terminal
             self._started = True
 
     def _setup(self):
+        """Register the two MCP handlers. Declarations and behavior are kept apart:
+        schemas live in tool_schemas, behavior in _dispatch."""
         # list_tools advertises the tool SCHEMAS (declarations live in
         # tool_schemas.build_tool_list); call_tool routes each invocation to
         # _dispatch, which holds the behavior. Keep tool names in sync across both.
         @self.server.list_tools()
         async def list_tools():
+            """Advertise the available tools to the client."""
             return build_tool_list()
 
         @self.server.call_tool()
         async def call_tool(name, arguments):
+            """Route one invocation to _dispatch, converting any exception into an
+            error payload so a failed tool never breaks the protocol session."""
             try:
                 return await self._dispatch(name, arguments or {})
             except Exception as e:
@@ -77,6 +108,17 @@ class PowerShellTerminalMCP:
                 return _txt(json.dumps({"error": str(e)}))
 
     async def _dispatch(self, name, args):
+        """Map a tool name to session work and shape the JSON reply.
+
+        Every blocking call is pushed through run_in_executor: the session methods
+        wait on a real process, and running them inline would stall the event loop
+        and the whole MCP connection with it.
+
+        Note the two response shapes -- batch tools return status/exit_code/success,
+        interactive ones return the state machine's {state, tail, ...}. Command
+        output is returned filtered by default, with the full text retrievable by
+        command_id.
+        """
         self._ensure_started()
         loop = asyncio.get_event_loop()
 
@@ -183,6 +225,10 @@ class PowerShellTerminalMCP:
             rows = self.state.get_conversation_commands(int(args["conversation_id"]))
             return _txt(json.dumps(rows, ensure_ascii=False))
 
+        if name == "get_command_history":
+            rows = self.state.get_command_history(args["from_date"], args["to_date"])
+            return _txt(json.dumps(rows, ensure_ascii=False))
+
         if name == "save_script":
             nm = self.state.save_script(args["name"], args["content"])
             return _txt(json.dumps({"saved": nm}))
@@ -209,6 +255,10 @@ class PowerShellTerminalMCP:
         raise ValueError("Unknown tool: %s" % name)
 
     async def run(self):
+        """Serve MCP over stdio until the client disconnects, then shut the terminal
+        down. The finally block matters: without it a closed client would leave an
+        orphaned PowerShell process and web server behind.
+        """
         logger.info("PowerShell Terminal MCP ready.")
         try:
             async with stdio_server() as (read_stream, write_stream):
@@ -223,6 +273,7 @@ class PowerShellTerminalMCP:
 
 
 async def main():
+    """Entry point used by the console script and by __main__."""
     await PowerShellTerminalMCP().run()
 
 

@@ -16,6 +16,8 @@ class ReaderThread:
     """Continuously drains the pty into an on_data callback until EOF/stop."""
 
     def __init__(self, proc, on_data, chunk=4096):
+        """Prepared but not started, so the caller controls when output begins
+        flowing. Daemon thread: a stuck read must never keep the process alive."""
         self.proc = proc
         self.on_data = on_data
         self.chunk = chunk
@@ -23,9 +25,17 @@ class ReaderThread:
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
+        """Begin draining the pty."""
         self._thread.start()
 
     def _run(self):
+        """The drain loop. Any read failure means the shell is gone, so the loop
+        exits quietly rather than raising on a dead pty; a callback that throws is
+        logged but never kills the reader, since losing this thread would blind
+        both the AI and the web terminal.
+
+        The short sleep on empty reads keeps an idle session from spinning.
+        """
         while self._alive:
             try:
                 data = self.proc.read(self.chunk)
@@ -44,4 +54,6 @@ class ReaderThread:
                 time.sleep(0.01)
 
     def stop(self):
+        """Ask the loop to exit. Cooperative rather than forced -- the thread may be
+        parked in a blocking read, and it will notice on the next iteration."""
         self._alive = False

@@ -1,27 +1,15 @@
 """Configuration management module"""
 
 from .config_dataclasses import (
-    ConnectionConfig, RemoteConfig, CommandExecutionConfig, PromptDetectionConfig,
-    BufferConfig, TerminalConfig, HistoryConfig, ShortcutsConfig, SearchConfig,
-    OutputModesConfig, ClaudeConfig, ServerConfig, LoggingConfig
+    BufferConfig, ClaudeConfig, InteractiveConfig, ServerConfig, DatabaseConfig
 )
 from .config_loader import Config
-from .config_init import get_package_config_dir
 
 __all__ = [
-    'ConnectionConfig',
-    'RemoteConfig',
-    'CommandExecutionConfig',
-    'PromptDetectionConfig',
     'BufferConfig',
-    'TerminalConfig',
-    'HistoryConfig',
-    'ShortcutsConfig',
-    'SearchConfig',
-    'OutputModesConfig',
     'ClaudeConfig',
+    'InteractiveConfig',
     'ServerConfig',
-    'LoggingConfig',
+    'DatabaseConfig',
     'Config',
-    'get_package_config_dir',
 ]

@@ -115,7 +115,7 @@ class WebSocketManager:
 
     async def _broadcast_output_loop(self):
         """
-        Background task that broadcasts SSH output to all connected WebSockets
+        Background task that broadcasts PowerShell session output to all connected WebSockets
         Runs continuously while server is active
         """
         logger.info("Broadcast loop started successfully")

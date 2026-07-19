@@ -1,6 +1,6 @@
 """Output handling module"""
 
-from .output_buffer import OutputLine, OutputBuffer
+from .output_buffer_base import OutputLine, OutputBuffer
 from .output_filter import SmartOutputFilter
 from .output_filter_commands import (
     filter_installation, filter_file_listing, filter_file_viewing,

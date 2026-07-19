@@ -29,6 +29,12 @@ ANSI_RE = re.compile(
 
 
 def strip_ansi(text):
+    """Remove escape sequences to get human-readable text.
+
+    Used for stored scrollback and for AI-facing output -- never before token
+    detection, since stripping would also remove the OSC-wrapped token the
+    detector is looking for.
+    """
     return ANSI_RE.sub("", text)
 
 
@@ -36,6 +42,12 @@ class CompletionToken:
     """Generates the prompt-override snippet and detects/parses the token."""
 
     def __init__(self, session_uuid=None):
+        """Mint the per-session identifiers.
+
+        The uuid is what makes detection safe: a token or marker from an earlier
+        session (or echoed text that merely looks like one) cannot match this
+        session's pattern.
+        """
         self.session_uuid = session_uuid or uuid.uuid4().hex
         self.prefix = TOKEN_NAME + ":" + self.session_uuid + ":"
         self.start_marker = "MCP_OUT_START:" + self.session_uuid

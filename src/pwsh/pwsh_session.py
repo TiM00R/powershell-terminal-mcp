@@ -1,15 +1,22 @@
 """
 pwsh_session.py
 PwshSession: one persistent PowerShell 7 session over a ConPTY. Owns the process,
-the background reader, and token-based completion detection. This is the production
-form of the proven spike.
+the background reader, and token-based completion detection.
+
+This is the bottom of the stack -- the only module that touches the live shell.
+Everything above it (SessionOutput, SharedTerminalState, the MCP tools, the web
+terminal) is a consumer of the two things produced here: per-command results for
+the AI, and a raw byte stream for the human terminal.
 
 Consumers:
   - AI path: run_command() -> token completion -> {success, exit_code, output}.
-  - Human path (later): raw output is forwarded via on_output for the web terminal.
+  - Human path: raw output is forwarded via on_output(raw_chunk), the single hook
+    the buffer / web broadcast layer attaches to.
 
-Not yet wired to the output buffer / web broadcast / DB; that is the next increment.
-Designed for it: on_output(raw_chunk) is the single hook to forward output.
+The hard problem solved here is knowing when a command has finished in a stream
+that has no framing: a shell echoes, redraws, and prompts, all as plain bytes. The
+answer is a unique token emitted by the prompt (see completion_token.py), which is
+why so much of this file is careful buffer-position bookkeeping.
 """
 
 import os
@@ -36,7 +43,21 @@ DEFAULT_COMMAND_TIMEOUT = 60.0
 
 
 class PwshSession(InteractiveMixin):
+    """The live PowerShell process and everything needed to read it reliably.
+
+    Holds no policy about what to run or how to present output; it only
+    guarantees that a command's bytes can be told apart from the shell's own
+    noise and from anything a human typed in the meantime.
+    """
+
     def __init__(self, shell=None, on_output=None, dimensions=None):
+        """Set up state only -- no process is spawned until start().
+
+        The two position markers matter: _scan_pos is how far the completion
+        scanner has consumed, and _interactive_start marks where the current
+        interactive step began. They are what keep one command's output from
+        bleeding into the next.
+        """
         self._shell_pref = shell
         self.on_output = on_output            # callback(raw_chunk) for buffer/web
         self.dimensions = dimensions or pwsh_launch.DEFAULT_DIMENSIONS
@@ -83,6 +104,8 @@ class PwshSession(InteractiveMixin):
         return self.start(settle_timeout)
 
     def close(self):
+        """Stop the reader, kill the shell, and remove the temp init script so a
+        crashed or restarted server leaves nothing behind."""
         if self.reader:
             self.reader.stop()
         if self.proc:
@@ -97,6 +120,14 @@ class PwshSession(InteractiveMixin):
     # --- output plumbing ----------------------------------------------------
 
     def _on_data(self, data):
+        """Reader-thread sink: append to the raw buffer, then fan out to the web
+        terminal. The buffer append is locked because completion scanning reads it
+        from the caller's thread while this runs.
+
+        Everything the shell produces passes through here -- AI output, human
+        typing, echo -- which is precisely why the human view is complete and the
+        AI view has to be carved out of it by position.
+        """
         with self._lock:
             self._buf += data
         if self.on_output:
@@ -236,6 +267,8 @@ class PwshSession(InteractiveMixin):
         pwsh_io.send_interrupt(self.proc)
 
     def is_alive(self):
+        """Whether the shell process is still running. Defensive by design: a dead
+        or half-torn-down pty should report False, not raise."""
         try:
             return self.proc is not None and self.proc.isalive()
         except Exception:
@@ -244,6 +277,8 @@ class PwshSession(InteractiveMixin):
     # --- internals ----------------------------------------------------------
 
     def _cleanup_init_script(self):
+        """Delete the temp init script written at startup. Best-effort: failing to
+        remove a temp file must never break shutdown."""
         if self._init_script and os.path.exists(self._init_script):
             try:
                 os.remove(self._init_script)

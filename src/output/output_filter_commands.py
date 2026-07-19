@@ -4,7 +4,7 @@ Smart filtering based on command type
 """
 
 import logging
-from utils.utils import extract_head_tail, parse_ls_output, format_bytes
+from utils import extract_head_tail, parse_ls_output, format_bytes
 
 logger = logging.getLogger(__name__)
 

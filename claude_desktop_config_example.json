@@ -1,7 +1,10 @@
 {
     "mcpServers": {
         "powershell-terminal": {
-            "command": "D:\\powershell_terminal\\.venv\\Scripts\\powershell-terminal-mcp.exe"
+            "command": "D:\\powershell_terminal\\.venv\\Scripts\\powershell-terminal-mcp.exe",
+            "env": {
+                "POWERSHELL_TERMINAL_HOME": "D:\\powershell_terminal"
+            }
         }
     }
 }

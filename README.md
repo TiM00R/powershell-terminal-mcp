@@ -171,11 +171,16 @@ Add:
 {
   "mcpServers": {
     "powershell-terminal": {
-      "command": "D:\\powershell_terminal\\.venv\\Scripts\\powershell-terminal-mcp.exe"
+      "command": "D:\\powershell_terminal\\.venv\\Scripts\\powershell-terminal-mcp.exe",
+      "env": {
+        "POWERSHELL_TERMINAL_HOME": "D:\\powershell_terminal"
+      }
     }
   }
 }
 ```
+
+`POWERSHELL_TERMINAL_HOME` (optional) sets the working root: the PowerShell session starts there, and your editable `config.yaml` lives there (copied from the packaged default on first run; upgrades never overwrite it). If unset, the config is placed in `%USERPROFILE%\.powershell-terminal\` and the session starts in `%USERPROFILE%`.
 
 ---
 
@@ -209,11 +214,16 @@ Add:
   "mcpServers": {
     "powershell-terminal": {
       "command": "D:\\powershell_terminal\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\powershell_terminal\\src\\mcp_server.py"]
+      "args": ["D:\\powershell_terminal\\src\\mcp_server.py"],
+      "env": {
+        "POWERSHELL_TERMINAL_HOME": "D:\\powershell_terminal"
+      }
     }
   }
 }
 ```
+
+When running from a source checkout, `config.yaml` at the repo root is used directly; `POWERSHELL_TERMINAL_HOME` still sets the session start directory.
 
 ---
 
@@ -393,7 +403,14 @@ powershell_terminal/
 
 ## 🔧 Configuration
 
-`config.yaml` (project root) controls:
+**Config file location** (first match wins):
+1. Source checkout: `config.yaml` at the repo root (dev mode)
+2. `%POWERSHELL_TERMINAL_HOME%\config.yaml` — your editable copy, created from the packaged default on the first run of a pip install
+3. If `POWERSHELL_TERMINAL_HOME` is unset: `%USERPROFILE%\.powershell-terminal\config.yaml`
+
+Edit your copy freely — package upgrades never overwrite it. Restart Claude Desktop after changes.
+
+`config.yaml` controls:
 - `server.host` / `server.port` — Web terminal address (default `localhost:8090`)
 - `server.replay_lines` — On-connect screen replay: `-1` full buffer (default), `0` prompt only, `N` last N lines
 - `server.replay_max_bytes` — Byte cap for the `N > 0` replay mode

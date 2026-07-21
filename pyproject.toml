@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "powershell-terminal-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "Shared AI + user PowerShell session on Windows — execute commands, run scripts, automate your PC"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -68,5 +68,5 @@ where = ["."]
 include = ["src*"]
 
 [tool.setuptools.package-data]
-src = ["*.json", "static/**/*"]
+src = ["*.json", "*.yaml", "static/**/*"]
 

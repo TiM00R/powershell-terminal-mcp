@@ -2,7 +2,7 @@
 PowerShell Terminal MCP - Shared AI + user PowerShell session on Windows
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 import sys
 import os
@@ -10,7 +10,7 @@ import os
 # Print post-install instructions only if being installed (not when imported by MCP)
 if 'pip' in sys.argv[0].lower() or 'setup.py' in sys.argv[0].lower():
     print("\n" + "=" * 70)
-    print("PowerShell Terminal MCP v0.3.0 - Installation Complete!")
+    print("PowerShell Terminal MCP v0.3.1 - Installation Complete!")
     print("=" * 70)
     print("\nNext Steps:")
     print("1. Add the server to your Claude Desktop config:")

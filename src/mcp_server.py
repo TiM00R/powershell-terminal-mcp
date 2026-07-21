@@ -15,7 +15,9 @@ Two details here are load-bearing:
 
 import asyncio
 import sys
+import os
 import json
+import shutil
 import uuid
 import logging
 from pathlib import Path
@@ -43,6 +45,24 @@ from tool_schemas import build_tool_list            # noqa: E402  (tool declarat
 sys.stdout = _original_stdout
 
 
+def _resolve_config_path():
+    """Locate config.yaml: source checkout first, then the user copy under
+    POWERSHELL_TERMINAL_HOME (created from the packaged default on first run)."""
+    dev_cfg = SCRIPT_DIR.parent / "config.yaml"
+    if dev_cfg.exists():
+        return dev_cfg
+    home = os.environ.get("POWERSHELL_TERMINAL_HOME")
+    root = Path(home) if home else Path.home() / ".powershell-terminal"
+    root.mkdir(parents=True, exist_ok=True)
+    user_cfg = root / "config.yaml"
+    if not user_cfg.exists():
+        packaged = SCRIPT_DIR / "config.yaml"
+        if packaged.exists():
+            shutil.copy(packaged, user_cfg)
+            logger.info("First run: copied default config to %s", user_cfg)
+    return user_cfg
+
+
 def _txt(s):
     """Wrap a string in the content shape MCP expects, so every tool branch below
     can end in one short line."""
@@ -65,7 +85,8 @@ class PowerShellTerminalMCP:
         ask for raw output later after receiving a token-reduced version.
         """
         self.state = get_shared_state()
-        config_file = SCRIPT_DIR.parent / "config.yaml"
+        config_file = _resolve_config_path()
+        logger.info("Loading config from: %s", config_file)
         self.config = Config(str(config_file))
         self.state.initialize(self.config)
         self.web_server = WebTerminalServer(self.state, self.config)
@@ -120,6 +141,11 @@ class PowerShellTerminalMCP:
         command_id.
         """
         self._ensure_started()
+
+        # Auto-open the web terminal if no browser tab is currently watching.
+        if name != "open_terminal" and not self.web_server.has_connected_clients():
+            await self.web_server.open_terminal()
+
         loop = asyncio.get_event_loop()
 
         if name == "execute_command":

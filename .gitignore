@@ -84,3 +84,5 @@ data/*.db-journal
 data/*.txt
 data/*.py
 
+
+src/config.yaml

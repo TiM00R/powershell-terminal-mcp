@@ -27,9 +27,16 @@ Write-Host ""
 Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
 Remove-Item -Recurse -Force dist, build, *.egg-info -ErrorAction SilentlyContinue
 
+# Stage config.yaml into src\ so it lands in the wheel (removed after build)
+Write-Host "Staging config.yaml into src\ for wheel..." -ForegroundColor Yellow
+Copy-Item "$scriptPath\config.yaml" "$scriptPath\src\config.yaml" -Force
+
 # Build package
 Write-Host "Building package..." -ForegroundColor Yellow
 & "$scriptPath\.venv\Scripts\python.exe" -m build
+
+# Remove transient staged config
+Remove-Item "$scriptPath\src\config.yaml" -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "======================================================================" -ForegroundColor Green

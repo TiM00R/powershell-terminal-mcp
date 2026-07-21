@@ -36,6 +36,7 @@ And Claude does it — executing commands in your real PowerShell session, analy
 - **✅ Reliable Completion Detection** — Exit codes and command completion detected via invisible prompt token in OSC escape sequences — no fragile regex matching
 - **📝 Multi-Line Commands** — Send readable multi-line blocks (functions, loops, here-strings, piped chains); they execute as a single unit and render as a proper `>>` continuation block in the terminal, with variables persisting across the session
 - **⌨️ Interactive Programs** — REPLs, installers, and prompts (`python -i`, `node`, `ftp`, `Read-Host`) work end-to-end: Claude drives them turn-by-turn via a state machine (`AWAITING_INPUT` / `IDLE` / `RUNNING` / `EXITED`) with `send_input`, `poll`, and Ctrl+C. Interactive programs you type yourself in the web terminal work too.
+- **🚀 Auto-Open Terminal** — The web terminal opens automatically on any command when no browser tab is connected; minimized tabs stay connected and are left alone
 - **🔁 Reconnect Replay** — Reopen or refresh the web terminal and the current screen is restored **in color**, instead of a blank tab
 - **📚 Script Library** — Save and reuse named `.ps1` scripts; full output persisted on script runs
 - **🗄️ Command History** — Commands grouped into conversations and logged to SQLite with selective output persistence
@@ -368,7 +369,7 @@ powershell_terminal/
 | `send_interrupt()` | Send Ctrl+C to the running command. |
 | `get_terminal_status()` | Session alive? Web terminal URL. |
 | `restart_session()` | Kill and respawn the PowerShell session (clears all state). |
-| `open_terminal()` | Open (or re-open) the web terminal in the browser. |
+| `open_terminal()` | Open (or re-open) the web terminal in the browser. Also happens automatically on any command when no tab is connected. |
 
 ### Scripts
 
@@ -437,6 +438,14 @@ python run_web.py                                            # launch web termin
 
 ## 📜 Version History
 
+### v0.3.1 (July 2026) -- Config file now ships with pip installs
+
+- `config.yaml` is now included in the wheel (packaged inside `src/`).
+- On first run, the default config is copied to `%POWERSHELL_TERMINAL_HOME%\config.yaml`
+  (or `%USERPROFILE%\.powershell-terminal\` if unset). Edit that copy; upgrades never overwrite it.
+- Previously, pip installs shipped no config file and silently ran on built-in defaults.
+- Web terminal now auto-opens on any command when no browser tab is connected (no more manual "open terminal" after Claude restart). Minimized tabs stay connected and do not retrigger.
+
 ### v0.3.0 (July 2026) — Windows-native config, command-history range queries, internal cleanup
 
 - ✅ **Windows/PowerShell output filter** — `error_patterns` rewritten for PowerShell / .NET / Windows console error text (e.g. `is not recognized`, `CategoryInfo`, `CommandNotFoundException`). Fixed a threshold-key bug where `network` and `log_search` commands silently fell back to the `generic` threshold (`network_info` → `network`, added `log_search`).
@@ -502,6 +511,6 @@ MIT
 
 ---
 
-**Version:** 0.3.0
+**Version:** 0.3.1
 **Last Updated:** July 2026
 **Maintainer:** Tim

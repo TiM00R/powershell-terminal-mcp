@@ -43,6 +43,12 @@ class WebTerminalServer:
         # Create WebSocket manager
         self._ws_manager = WebSocketManager(shared_state)
 
+    def has_connected_clients(self) -> bool:
+        """True if at least one browser tab holds an open WebSocket to this server.
+        Used by the MCP layer to auto-open the terminal before running commands
+        when nothing is watching."""
+        return bool(self._ws_manager.active_websockets)
+
     def is_running(self) -> bool:
         """Check if web server is running"""
         return self.shared_state.web_server_running

@@ -397,11 +397,11 @@ powershell_terminal/
 
 | Tool | Description |
 |------|-------------|
-| `execute_command(command, timeout?, interactive?, idle_ms?, max_s?, expect?)` | Run a command. Batch (default): filtered output + exit code, `status: "running"` on timeout. `interactive: true`: drive a REPL/prompt — returns `{state, output, exit_code, tail}` where state is `EXITED` / `AWAITING_INPUT` / `IDLE` / `RUNNING`. A multi-line `command` runs as a single block (shown as a `>>` continuation block; variables persist). |
+| `execute_command(command, timeout?, interactive?, idle_ms?, max_s?, expect?)` | Run a command. Batch (default): filtered output + exit code, `status: "running"` on timeout. `interactive: true`: drive a REPL/prompt — returns `{state, output, exit_code, tail}` where state is `EXITED` / `AWAITING_INPUT` / `IDLE` / `RUNNING`. A multi-line `command` runs as a single block (shown as a `>>` continuation block; variables persist). While Claude's previous command is still running, nothing is sent: it returns `status: "busy"` with the last screen lines (`tail`), so a new command is never typed into a running program. |
 | `get_command_output(command_id, raw?)` | Fetch a prior command's output by id. |
 | `send_input(text, idle_ms?, max_s?, expect?)` | Send a line to a running/interactive program, then wait; returns `{state, output, exit_code, tail}`. |
 | `poll(idle_ms?, max_s?, expect?)` | Accumulate more output from a running/interactive command **without** sending input. |
-| `send_interrupt()` | Send Ctrl+C to the running command. |
+| `send_interrupt(force?)` | Send Ctrl+C and report whether the program stopped (`{stopped, tail}`). `force: true` ends the programs the shell started, for one that ignores Ctrl+C (e.g. `ftp` stuck connecting); the PowerShell session itself stays, but `Start-Job` jobs end too. |
 | `get_terminal_status()` | Session alive? Web terminal URL, whether this session owns it (`web_owner`), and `web_warning` if it is unavailable. Read-only: never takes the terminal over. |
 | `restart_session()` | Kill and respawn the PowerShell session (clears all state; reopens in the project folder if known). |
 | `open_terminal(reopen?)` | Show the web terminal. Reuses an open tab you can see (its header briefly shows "Terminal requested by …"); otherwise opens a new tab. A tab that is hidden (background tab, minimized window, hidden browser pane) is not reused: it is told to close and a new one opens. `reopen: true` (only when you ask, e.g. "reopen the terminal" or "I can't find the terminal tab") closes the open terminal tab(s) and opens one fresh tab in front. Also happens automatically on any command when no tab is connected. |
@@ -494,6 +494,12 @@ Run the headless test harnesses without Claude Desktop:
 - ✅ **Web server rewritten on Starlette + uvicorn** — NiceGUI is no longer a dependency (smaller install, one connection per tab, server can stop and restart in-process). Same page, same look.
 - ✅ **One terminal tab, reused** — `open_terminal` always reuses the open tab and opens one only when none is connected; previously, switching between two sessions stacked up tabs. Its reply now clearly says the existing tab was reused, so Claude no longer opens the URL itself and creates a duplicate tab. Only a visible tab is reused; `reopen: true` replaces a tab you lost among others.
 - ✅ **Optional diagnostic event log** — `server.event_log` (off by default) records take-overs and tab events to `web.log`, to troubleshoot extra or missing tabs.
+- ✅ **Fix: commands typed into a running program** — a new command sent while an interactive program (e.g. `ftp`) was still running became that program's input, and the program's late output was reported as the new command's output. Such a command is now refused with `status: "busy"`.
+- ✅ **Ctrl+C reports whether it worked** — `send_interrupt` returns `stopped`; `force: true` ends a program that ignores Ctrl+C without restarting the session.
+- ✅ **Fix: Windows modules missing** — `Test-NetConnection`, `Resolve-DnsName` and other built-in Windows modules were not found when Claude started the server with an empty `PSModulePath`; Windows' own module folder is now always on the module path.
+- ✅ **Fix: repeated command in `tail`** — the `tail` of interactive results showed the typed command several times over (`ftp speedtest.teleftp speedtest.tele2…`), because each redraw of the line being typed was kept. `tail` now starts after the submitted command, so it shows only what is on screen since then (e.g. `Your name: `).
+- ✅ **Fix: stale exit codes** — a PowerShell command run after a failed program reported that program's exit code (e.g. `"probe"` → `exit_code: 1`). The exit code is now reset before each Claude command.
+- ✅ **No progress bars in Claude's output** — progress bars (e.g. `Test-NetConnection`, `Invoke-WebRequest`) were redrawn into the text Claude reads and could bury the real output. They are now hidden for Claude's commands only; commands you type in the browser still show them, and your own `$ProgressPreference` is restored after each Claude command.
 - ✅ **Tab closes when the session ends** — on a normal Claude quit the tab closes itself right away; if the server is killed it retries for 5 s, then closes. Scrollbar is now always visible in Edge/Chrome.
 
 ### v0.3.1 (July 2026) -- Config file now ships with pip installs

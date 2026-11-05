@@ -265,6 +265,21 @@ class PowerShellTerminalMCP:
                 await self.web_server.open_terminal(
                     reason="auto-open, no tab reconnected after take-over")
 
+        if name in ("execute_command", "run_script"):
+            # Never type a new command into a program that is still running:
+            # it would become that program's input, and the program's late
+            # output would be credited to the new command.
+            busy = await loop.run_in_executor(None, self.state.busy_tail)
+            if busy is not None:
+                return _txt(json.dumps({
+                    "status": "busy",
+                    "error": "The previous command is still running, so nothing "
+                             "was sent. Answer it with send_input, wait with poll, "
+                             "or stop it with send_interrupt (force=true if Ctrl+C "
+                             "does not stop it).",
+                    "tail": busy,
+                }, ensure_ascii=False))
+
         if name == "execute_command":
             cmd = args["command"]
             if bool(args.get("interactive", False)):
@@ -339,8 +354,18 @@ class PowerShellTerminalMCP:
             }, ensure_ascii=False))
 
         if name == "send_interrupt":
-            self.state.send_interrupt()
-            return _txt(json.dumps({"status": "interrupt_sent"}))
+            force = bool(args.get("force", False))
+            r = await loop.run_in_executor(None, lambda: self.state.interrupt(force))
+            reply = {"stopped": r["stopped"], "tail": r["tail"]}
+            if force:
+                reply["ended"] = r["ended"]
+            if not r["stopped"]:
+                reply["message"] = ("The program did not stop. " +
+                                    ("It may still be closing; poll to check."
+                                     if force else
+                                     "If it is stuck, call send_interrupt with "
+                                     "force=true to end it."))
+            return _txt(json.dumps(reply, ensure_ascii=False))
 
         if name == "get_terminal_status":
             return _txt(json.dumps({

@@ -98,6 +98,7 @@ class InteractiveMixin:
             match = self.token.search(raw, self._scan_pos)
             if match:
                 self._scan_pos = match.end()
+                self._running = False
                 end = self._output_end(raw, self._interactive_start, match)
                 output = extract_output(raw[self._interactive_start:end],
                                         self.token.start_marker)
@@ -151,9 +152,19 @@ class InteractiveMixin:
         return strip_ansi(raw_slice).replace("\r", "")
 
     def _interactive_tail(self, raw, n=120):
-        """Last ~n chars of the ANSI-stripped buffer. Stripping removes the invisible
-        OSC token too, so real prompt punctuation is exposed for classification."""
-        return strip_ansi(raw).replace("\r", "")[-n:]
+        """Last ~n chars of the screen text since the latest command was
+        submitted. Stripping removes the invisible OSC token too, so real prompt
+        punctuation is exposed for classification.
+
+        Starts after the latest output-start marker (written on every submitted
+        command, AI or human), because the text before it is the line editor
+        redrawing the typed command: with cursor moves stripped, each redraw
+        stays in and the command shows up several times over."""
+        mk = raw.rfind(self.token.start_marker)
+        if mk != -1:
+            end = raw.find("\x07", mk)       # the marker's OSC ends with BEL
+            raw = raw[(end + 1) if end != -1 else mk + len(self.token.start_marker):]
+        return strip_ansi(raw).replace("\r", "").lstrip("\n")[-n:]
 
     def _is_prompt_shaped(self, tail):
         """True when the tail ends with prompt punctuation and has NO trailing

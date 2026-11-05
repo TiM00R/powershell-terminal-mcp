@@ -26,6 +26,14 @@ ENCODING_SETUP = (
     # Restore PATHEXT in case the MCP server inherited a stripped-down value (e.g. only .CPL).
     # Without .EXE in PATHEXT, bare command names like 'git' and 'ipconfig' are not resolved.
     "$env:PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC'\n"
+    # Same for PSModulePath: started with an empty value, PowerShell 7 leaves out
+    # Windows' own module folder, so Test-NetConnection, Resolve-DnsName and the
+    # other built-in Windows modules are not found. Add it back if missing.
+    "$__sysmod = Join-Path $env:SystemRoot 'system32\\WindowsPowerShell\\v1.0\\Modules'\n"
+    "if ($env:SystemRoot -and (Test-Path $__sysmod) -and (($env:PSModulePath -split ';') -notcontains $__sysmod)) {\n"
+    "  $env:PSModulePath = $env:PSModulePath.TrimEnd(';') + ';' + $__sysmod\n"
+    "}\n"
+    "Remove-Variable __sysmod -ErrorAction SilentlyContinue\n"
     # PT_START_DIR: the client's project folder (MCP roots), set only for this shell.
     "$__start = $env:PT_START_DIR\n"
     "Remove-Item Env:PT_START_DIR -ErrorAction SilentlyContinue\n"

@@ -135,9 +135,15 @@ class SessionOutput:
             kwargs["max_s"] = max_s
         return kwargs
 
-    def send_interrupt(self):
-        """Ctrl+C into the pty -- works for both the batch and interactive paths."""
-        self.session.send_interrupt()
+    def interrupt(self, force=False):
+        """Ctrl+C (or, with force, end the programs the shell started) and report
+        whether the foreground program stopped. See PwshSession.interrupt."""
+        return self.session.interrupt(force=force)
+
+    def busy_tail(self):
+        """None when free for a new AI command, else the running command's last
+        screen lines. See PwshSession.busy_tail."""
+        return self.session.busy_tail()
 
     # --- human / passthrough ------------------------------------------------
 

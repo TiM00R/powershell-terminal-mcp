@@ -33,7 +33,9 @@ def build_tool_list():
                         "skipped for that invocation and the call returns a state "
                         "record {state, output, exit_code, tail} where state is "
                         "EXITED | AWAITING_INPUT | IDLE | RUNNING. Follow up with "
-                        "send_input (to answer) or poll (to accumulate more).",
+                        "send_input (to answer) or poll (to accumulate more). "
+                        "While a previous command is still running nothing is "
+                        "sent and status 'busy' is returned.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -94,8 +96,18 @@ def build_tool_list():
         ),
         types.Tool(
             name="send_interrupt",
-            description="Send Ctrl+C to the foreground command.",
-            inputSchema={"type": "object", "properties": {}},
+            description="Send Ctrl+C to the foreground command and report whether "
+                        "it stopped: {stopped, tail}. If stopped is false, the "
+                        "program ignored Ctrl+C; call again with force=true.",
+            inputSchema={"type": "object", "properties": {
+                "force": {"type": "boolean",
+                          "description": "End the programs the shell started "
+                                         "instead of sending Ctrl+C (the "
+                                         "PowerShell session itself stays). Only "
+                                         "when a plain Ctrl+C did not stop the "
+                                         "program; also ends Start-Job jobs "
+                                         "(default false)."},
+            }},
         ),
         types.Tool(
             name="get_terminal_status",

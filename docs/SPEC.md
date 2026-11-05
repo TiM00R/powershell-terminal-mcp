@@ -13,6 +13,10 @@ Claude sessions share the web terminal ("latest user wins" take-over via
 src/web/ownership.py, each session keeps its own shell); Claude Code sessions open
 in their project folder (MCP roots); one visible tab is reused (open_terminal
 reopen option for a lost tab); optional diagnostic event log (server.event_log).
+Interactive fixes: a busy guard (no command typed into a running program),
+send_interrupt reports success and can force-end a stuck program, tail starts
+after the submitted command, AI batch commands hide progress bars and reset
+$LASTEXITCODE, and Windows' module folder is restored to PSModulePath.
 See README.md ("Multiple Claude Sessions (Take-Over)" and the v0.4.0 changelog).
 Sections below that mention NiceGUI, close_all or _ensure_started describe the
 v0.3 design.
@@ -179,7 +183,8 @@ is skipped so the prompt is never hidden).
 
 TOOL SURFACE: execute_command gains interactive / idle_ms / max_s / expect; send_input
 now waits on the primitive and returns {state, output, exit_code, tail}; new poll tool
-(accumulate-more, no input); send_interrupt unchanged.
+(accumulate-more, no input); send_interrupt unchanged. (v0.4.0: send_interrupt
+reports {stopped, tail} and takes force; see docs/INTERACTIVE-INPUT.md section 5.)
 
 CAVEAT: Windows OpenSSH reads its password from the console (CONIN$), not stdin, and
 does not engage as a bypassed grandchild under winpty's ConPTY - ssh password auth
@@ -431,7 +436,8 @@ was added to the surface. The authoritative current tool list is README.md
 - get_command_output(command_id, raw=False) -> filtered or raw (raw from live
   buffer this session, or DB output_text if persisted).
 - send_input(text) -> stdin to a running/interactive command.
-- send_interrupt() -> Ctrl+C.
+- send_interrupt(force=False) -> Ctrl+C, reports whether it stopped; force ends
+  the programs the shell started (v0.4.0).
 - get_terminal_status() -> session alive?, cwd, PS version, web URL.
 - restart_session() -> kill + respawn pwsh (deliberately clears live state).
 - save_script(name, content) / list_scripts() / run_script(name, timeout=...).

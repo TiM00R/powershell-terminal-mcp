@@ -38,6 +38,9 @@ def _parse(result):
 
 
 async def main():
+    # Start the shell the way some Claude hosts do, with PSModulePath empty,
+    # so the Windows-modules check below covers that case.
+    os.environ["PSModulePath"] = ""
     srv = mcp_server.PowerShellTerminalMCP()
 
     # Avoid opening a browser / binding the web port during the headless test:
@@ -73,6 +76,8 @@ async def main():
     print("execute_command: failing exit code")
     r = _parse(await srv._dispatch("execute_command", {"command": "cmd /c exit 7"}))
     check("exit 7 captured", r.get("exit_code") == 7)
+    r = _parse(await srv._dispatch("execute_command", {"command": "Write-Output 'after-7'"}))
+    check("next command does not inherit exit 7", r.get("exit_code") == 0)
 
     print("execute_command: interactive (timeout -> running)")
     r = _parse(await srv._dispatch(
@@ -83,12 +88,57 @@ async def main():
     if running:
         print("send_input: answer the prompt")
         r = _parse(await srv._dispatch("send_input", {"text": "mcpval"}))
-        check("completed after input", r.get("status") == "completed")
+        # send_input returns the interactive record: {state, ...}, not status.
+        check("completed after input", r.get("state") == "EXITED")
         check("answer in output", "a:mcpval" in (r.get("output") or ""))
 
-    print("send_interrupt")
+    print("tail: no repeated command echo")
+    r = _parse(await srv._dispatch("execute_command",
+        {"command": "$n = Read-Host 'Your name'; \"Hello $n\"", "interactive": True}))
+    check("waiting for input", r.get("state") == "AWAITING_INPUT")
+    check("tail is just the prompt", r.get("tail") == "Your name: ")
+    r = _parse(await srv._dispatch("send_input", {"text": "Tim"}))
+    check("tail has no typed command", "Read-Host" not in (r.get("tail") or ""))
+    check("tail has the answer", "Hello Tim" in (r.get("tail") or ""))
+
+    print("send_interrupt: nothing running")
     r = _parse(await srv._dispatch("send_interrupt", {}))
-    check("interrupt acknowledged", r.get("status") == "interrupt_sent")
+    check("reports stopped", r.get("stopped") is True)
+
+    print("busy: a new command is not typed into a running one")
+    r = _parse(await srv._dispatch("execute_command",
+        {"command": "Start-Sleep 20", "interactive": True, "max_s": 1, "idle_ms": 400}))
+    check("sleep still running", r.get("state") in ("IDLE", "RUNNING"))
+    r = _parse(await srv._dispatch("execute_command", {"command": "Write-Output 'too-early'"}))
+    check("refused as busy", r.get("status") == "busy" and "tail" in r)
+    r = _parse(await srv._dispatch("run_script", {"name": "anything"}))
+    check("run_script refused as busy", r.get("status") == "busy")
+    r = _parse(await srv._dispatch("send_interrupt", {}))
+    check("Ctrl+C stopped Start-Sleep", r.get("stopped") is True)
+    r = _parse(await srv._dispatch("execute_command", {"command": "Write-Output 'probe'"}))
+    check("next command runs", r.get("status") == "completed")
+    check("next command has only its own output", (r.get("output") or "").strip() == "probe")
+    check("'too-early' never ran", "too-early" not in (r.get("output") or ""))
+
+    print("send_interrupt force: a program that ignores Ctrl+C")
+    r = _parse(await srv._dispatch("execute_command",
+        {"command": "pwsh -NoProfile -Command '[Console]::TreatControlCAsInput = $true; "
+                    "while ($true) { Start-Sleep -Milliseconds 200 }'",
+         "interactive": True, "max_s": 2, "idle_ms": 1000}))
+    check("stubborn program running", r.get("state") in ("IDLE", "RUNNING"))
+    r = _parse(await srv._dispatch("send_interrupt", {}))
+    check("plain Ctrl+C reports not stopped", r.get("stopped") is False and "message" in r)
+    r = _parse(await srv._dispatch("send_interrupt", {"force": True}))
+    check("force stopped it", r.get("stopped") is True)
+    check("force names the ended program", "pwsh.exe" in [n.lower() for n in r.get("ended", [])])
+    r = _parse(await srv._dispatch("execute_command", {"command": "Write-Output 'after-force'"}))
+    check("session works after force", (r.get("output") or "").strip() == "after-force")
+
+    print("Windows modules found despite an empty PSModulePath")
+    r = _parse(await srv._dispatch("execute_command",
+        {"command": "(Get-Command Test-NetConnection, Resolve-DnsName).Name -join ','"}))
+    check("Test-NetConnection and Resolve-DnsName found",
+          "Test-NetConnection,Resolve-DnsName" in (r.get("output") or ""))
 
     print("restart_session")
     r = _parse(await srv._dispatch("restart_session", {}))

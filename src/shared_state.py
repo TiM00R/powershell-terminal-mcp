@@ -280,10 +280,17 @@ class SharedTerminalState(StateHistoryMixin):
         return self.session_output.wait_interactive(
             idle_ms=idle_ms, max_s=max_s, expect=expect)
 
-    def send_interrupt(self):
+    def interrupt(self, force: bool = False):
         """Ctrl+C. The escape hatch for a runaway or wedged command, letting the
-        session be reclaimed without tearing down the pty."""
-        self.session_output.send_interrupt()
+        session be reclaimed without tearing down the pty. force ends the
+        programs the shell started, for one that ignores Ctrl+C.
+        Returns {stopped, tail, ended}."""
+        return self.session_output.interrupt(force=force)
+
+    def busy_tail(self):
+        """None when the session is free for a new AI command; otherwise the
+        last screen lines of the command that is still running."""
+        return self.session_output.busy_tail()
 
 
 # Global shared state

@@ -24,7 +24,7 @@ import time
 import threading
 import logging
 
-from pwsh import pwsh_launch, pwsh_io
+from pwsh import pwsh_launch, pwsh_io, proc_tree
 from pwsh.pwsh_reader import ReaderThread
 from pwsh.output_clean import extract_output
 from pwsh.pwsh_interactive import (InteractiveMixin, INTERACTIVE_IDLE_MS,
@@ -71,6 +71,10 @@ class PwshSession(InteractiveMixin):
         self._interactive_start = 0     # slice pointer for the interactive primitive
         self._init_script = None
         self.start_dir = None           # remembered so restart() reopens there
+        # True from the moment an AI command is sent until its prompt token
+        # comes back. While set, a new command would be typed into whatever is
+        # still running, so callers check busy_tail() first.
+        self._running = False
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -91,6 +95,7 @@ class PwshSession(InteractiveMixin):
         self._buf = ""
         self._scan_pos = 0
         self._interactive_start = 0
+        self._running = False
         self.reader = ReaderThread(self.proc, self._on_data, pwsh_launch.READ_CHUNK)
         self.reader.start()
 
@@ -159,6 +164,7 @@ class PwshSession(InteractiveMixin):
             match = self.token.search(raw, self._scan_pos)
             if match:
                 self._scan_pos = match.end()
+                self._running = False
                 return True, raw, match
             time.sleep(poll)
         with self._lock:
@@ -187,6 +193,7 @@ class PwshSession(InteractiveMixin):
             self._interactive_start = self._scan_pos
         start = self._scan_pos
 
+        self._running = True
         if interactive:
             # Default accept (CR): exe bypasses the wrapper, attaches to the ConPTY
             # with stdin open. Same path humans get in the web terminal.
@@ -272,6 +279,55 @@ class PwshSession(InteractiveMixin):
             self.proc.setwinsize(rows, cols)
         except Exception:
             logger.debug("resize failed", exc_info=True)
+
+    def busy_tail(self, grace=0.3):
+        """None when the session is free for a new AI command; otherwise the last
+        screen lines of the command that is still running.
+
+        Gives the previous command a short grace period to finish. If it has
+        finished by now, its token is consumed here, so its late output is not
+        credited to the next command."""
+        if not self._running:
+            return None
+        found, raw, _ = self.wait_token(grace)
+        if found:
+            with self._lock:
+                self._interactive_start = len(self._buf)
+            return None
+        return self._interactive_tail(raw)
+
+    def interrupt(self, force=False, wait_s=2.0):
+        """Stop the foreground program and report whether it worked.
+
+        force=False sends Ctrl+C. force=True ends the programs the shell started
+        (for a program that ignores Ctrl+C); the shell itself keeps running.
+        Returns {stopped, tail, ended}. stopped means the shell is back at its
+        prompt (for an AI command) or no started program is left (otherwise)."""
+        ended = []
+        if force:
+            ended = proc_tree.end_child_processes(getattr(self.proc, "pid", None))
+        else:
+            pwsh_io.send_interrupt(self.proc)
+
+        if self._running:
+            found, raw, _ = self.wait_token(wait_s)
+            if found:
+                with self._lock:
+                    self._interactive_start = len(self._buf)
+            stopped = found
+        else:
+            # No AI command running: either the shell is idle, or a program
+            # the user started is in front. Either way the shell draws a new
+            # prompt once it is free (Ctrl+C at an idle prompt draws one
+            # too). Consume that prompt's token here; left unread, it would be
+            # taken as the NEXT command's completion and end it at once.
+            found, raw, _ = self.wait_token(wait_s)
+            if found:
+                with self._lock:
+                    self._interactive_start = len(self._buf)
+            stopped = not proc_tree.child_processes(getattr(self.proc, "pid", None))
+        return {"stopped": stopped, "tail": self._interactive_tail(raw),
+                "ended": ended}
 
     def send_interrupt(self):
         """Send Ctrl+C to the foreground command."""

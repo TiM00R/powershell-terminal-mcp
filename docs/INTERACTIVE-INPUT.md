@@ -67,7 +67,10 @@ The interactive wait returns a record, not just text:
     { state, output, tail, exit_code }
 
   output    - text accumulated since the last return (buffer slice).
-  tail      - last ~120 chars of the ANSI-stripped buffer (prompt inspection).
+  tail      - last ~120 chars of the ANSI-stripped screen text since the latest
+              submitted command (prompt inspection). Starts after that command's
+              output-start marker, so the line editor's redraws of the typed
+              command (which pile up once cursor moves are stripped) are left out.
   exit_code - int when state == EXITED, else null.
 
 STATES (returned by execute_command(interactive=true), send_input, and poll):
@@ -151,7 +154,15 @@ Notes:
   poll([idle_ms, max_s, expect])   NEW
     wait_interactive with no write - the accumulate-more / re-poll primitive.
 
-  send_interrupt   unchanged (Ctrl+C to foreground; ends a stuck interactive run).
+  send_interrupt([force])
+    Ctrl+C to the foreground, then reports {stopped, tail}. force=true ends the
+    programs the shell started instead (for one that ignores Ctrl+C, e.g. ftp
+    stuck connecting) and also returns their names in "ended"; the shell stays.
+
+  Busy guard (v0.4.0): while an AI command has not returned to the prompt,
+  execute_command / run_script send nothing and return {status: "busy", tail}.
+  Otherwise the new command would be typed into the running program, and that
+  program's late output and exit status would be credited to the new command.
 
 ================================================================================
 ## 6. AI-BATCH MARKER (how default-bypass stays safe for batch)

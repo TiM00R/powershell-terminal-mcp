@@ -89,6 +89,12 @@ class CompletionToken:
             # clobber them. Clears batch mode set by the Enter handler (U+200B
             # sentinel), so the next command (which may be human-typed) defaults to bypass.
             "  $global:__mcp_ai_batch = $false\n"
+            # Restore the progress setting hidden for the AI command (see the
+            # Enter handler), so commands typed in the browser show bars again.
+            "  if ($null -ne $global:__mcp_progress) {\n"
+            "    $global:ProgressPreference = $global:__mcp_progress\n"
+            "    $global:__mcp_progress = $null\n"
+            "  }\n"
             "  if ($null -eq $code) { $code = 0 }\n"
             "  $base = ''\n"
             "  if ($global:__mcp_prev) {\n"
@@ -117,6 +123,15 @@ class CompletionToken:
             "    $__submit = -not ($__errs | Where-Object { $_.IncompleteInput })\n"
             "    if ($__submit -and $__l.StartsWith([char]0x200B)) {\n"
             "      $global:__mcp_ai_batch = $true\n"
+            # No progress bars for AI batch commands: their redraws are kept
+            # in the text the AI reads and can bury the real output. The
+            # prompt function restores the user's setting afterwards.
+            "      $global:__mcp_progress = $global:ProgressPreference\n"
+            "      $global:ProgressPreference = 'SilentlyContinue'\n"
+            # Clear the last program's exit code, so the code the prompt
+            # reports belongs to THIS command. Without it, a plain PowerShell
+            # command after a failed program reported that program's code.
+            "      $global:LASTEXITCODE = 0\n"
             "      [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, 1, '')\n"
             "    }\n"
             "    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()\n"

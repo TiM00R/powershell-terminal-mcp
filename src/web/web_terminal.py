@@ -1,35 +1,38 @@
 """
-Web Terminal Server - NiceGUI-based xterm.js interface
-WITH WebSocket broadcast for multi-terminal synchronization
-FIXED: Proper WebSocket message handling that keeps connection alive
+Web Terminal Server - plain Starlette + uvicorn serving an xterm.js page, with
+WebSocket broadcast so every open tab shows the same session.
+
+The server can be stopped and started again inside one process. That is what lets
+a copy of this MCP server hand the port over to another copy (see ownership.py)
+and take it back later.
 """
 
 import asyncio
-import sys
+import logging
 import os
 import threading
 import time
-import logging
 import webbrowser
-from typing import Optional
+from typing import Callable, Optional, Tuple
+
+from .web_terminal_websocket import WebSocketManager
+from .web_terminal_ui import render_index_html
+from . import ownership
+from .eventlog import log_event
 
 logger = logging.getLogger(__name__)
 
-# Import from split modules
-from .web_terminal_websocket import WebSocketManager
-from .web_terminal_ui import create_terminal_page
+STATIC_DIR = os.path.join(os.path.dirname(__file__), '..', 'static')
 
 
 class WebTerminalServer:
     """
-    Web-based terminal interface with WebSocket broadcast
-    Multiple browser windows stay perfectly synchronized
+    Web-based terminal interface with WebSocket broadcast.
+    Multiple browser windows stay synchronized.
     """
 
     def __init__(self, shared_state, config, hosts_manager=None):
         """
-        Initialize web terminal server
-
         Args:
             shared_state: SharedTerminalState instance
             config: Config instance
@@ -38,119 +41,279 @@ class WebTerminalServer:
         self.shared_state = shared_state
         self.config = config
         self.thread: Optional[threading.Thread] = None
-        self._running = False
-
-        # Create WebSocket manager
+        self._server = None          # uvicorn.Server while running
+        self._loop = None            # the server thread's event loop
+        self._token: Optional[str] = None
         self._ws_manager = WebSocketManager(shared_state)
+        # Called (in a background thread) when another process asks for the
+        # port. Set by the MCP server; without it we just stop serving.
+        self.on_release: Optional[Callable[[], None]] = None
+        # Who owns the terminal, shown in the tab title ("Claude Code · repo").
+        self.owner_label: str = ""
+
+    @property
+    def url(self) -> str:
+        return "http://%s:%s" % (self.config.server.host, self.config.server.port)
 
     def has_connected_clients(self) -> bool:
-        """True if at least one browser tab holds an open WebSocket to this server.
-        Used by the MCP layer to auto-open the terminal before running commands
-        when nothing is watching."""
-        return bool(self._ws_manager.active_websockets)
+        """True if at least one browser tab holds an open WebSocket to this server."""
+        return self.is_running() and bool(self._ws_manager.active_websockets)
+
+    def has_visible_clients(self) -> bool:
+        """True if a connected tab says it is on screen (not a background tab,
+        minimized window, or hidden browser pane)."""
+        m = self._ws_manager
+        return self.is_running() and bool(m.visible_websockets & m.active_websockets)
+
+    def client_counts(self) -> Tuple[int, int]:
+        """(connected tabs, visible tabs)."""
+        m = self._ws_manager
+        return len(m.active_websockets), len(m.visible_websockets & m.active_websockets)
 
     def is_running(self) -> bool:
-        """Check if web server is running"""
-        return self.shared_state.web_server_running
+        """True while this process is serving the port."""
+        return self._server is not None and self.shared_state.web_server_running
 
-    def start(self):
-        """Start the web terminal server in a background thread"""
+    # --- start / stop -------------------------------------------------------
+
+    def start(self) -> bool:
+        """Start serving; returns False (and logs why) if the port is busy."""
+        ok, err = self.try_start()
+        if not ok:
+            logger.error("Web terminal could not start on %s: %s", self.url, err)
+        return ok
+
+    def try_start(self, wait_s: float = 10.0) -> Tuple[bool, Optional[str]]:
+        """Bind the port and serve in a background thread.
+
+        Returns (True, None) once the socket is bound, or (False, reason) if the
+        bind failed (typically: another process owns the port)."""
         if self.is_running():
-            logger.info("Web terminal already running")
-            return
+            return True, None
 
-        logger.info(f"Starting web terminal on http://{self.config.server.host}:{self.config.server.port}")
+        import uvicorn
 
-        # Mark running BEFORE the thread can accept connections. NiceGUI can
-        # start serving during the sleep() below; if a tab connects before this
-        # flag is True, the broadcast loop sees web_server_running == False and
-        # exits immediately, leaving every later tab blank/unresponsive.
+        # Fresh manager per run: the old one's broadcast task belonged to the old
+        # (now closed) event loop.
+        self._ws_manager = WebSocketManager(self.shared_state)
+        server = uvicorn.Server(uvicorn.Config(
+            self._build_app(),
+            host=self.config.server.host,
+            port=self.config.server.port,
+            log_config=None,      # never let uvicorn write to stdout (JSON-RPC)
+            access_log=False,
+            lifespan="off",
+            timeout_graceful_shutdown=1,
+        ))
+        error = {}
+
+        def run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            try:
+                loop.run_until_complete(server.serve())
+            except BaseException as e:      # uvicorn calls sys.exit(1) on bind failure
+                error["reason"] = "port %s is in use" % self.config.server.port \
+                    if isinstance(e, SystemExit) else repr(e)
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+
+        # Set before the thread can accept connections so the broadcast loop
+        # does not exit immediately on the first connect.
         self.shared_state.web_server_running = True
+        thread = threading.Thread(target=run, daemon=True, name="web-terminal")
+        thread.start()
 
-        self.thread = threading.Thread(target=self._run_web_server, daemon=True)
-        self.thread.start()
+        deadline = time.time() + wait_s
+        while time.time() < deadline and thread.is_alive() and not server.started:
+            time.sleep(0.05)
 
-        time.sleep(2)
+        if not server.started:
+            server.should_exit = True
+            thread.join(2)
+            self.shared_state.web_server_running = False
+            self._loop = None
+            reason = error.get("reason") or "server did not start"
+            log_event("bind_failed", port=self.config.server.port, reason=reason)
+            return False, reason
 
-        # NOTE: do NOT open a browser here. start() launches the server only.
-        # open_terminal() is the single place that opens a tab, so we never
-        # get a duplicate tab from start()+open_terminal() firing together.
-        logger.info("Web terminal server started (browser opened by open_terminal)")
+        self._server = server
+        self.thread = thread
+        self._token = ownership.new_token()
+        ownership.write_owner(self.config.server.port, self._token)
+        logger.info("Web terminal serving %s (owner pid %s)", self.url, os.getpid())
+        log_event("bind_ok", port=self.config.server.port)
+        return True, None
 
-    def stop(self):
-        """Stop the web terminal server and close all WebSocket connections"""
-        if not self.is_running():
-            logger.info("Web terminal not running")
+    def stop(self, timeout: float = 5.0):
+        """Stop serving and free the port. Safe to call when not running."""
+        server, thread = self._server, self.thread
+        if server is None:
             return
-
         logger.info("Stopping web terminal server...")
-
-        # Close all WebSocket connections
-        self._ws_manager.close_all()
-
-        # Stop the server
-        self.shared_state.web_server_running = False
+        self.shared_state.web_server_running = False   # ends the broadcast loop
+        server.should_exit = True
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout)
+        self._server = None
+        self.thread = None
+        self._loop = None
+        if self._token:
+            ownership.remove_owner(self.config.server.port, self._token)
+            self._token = None
+        log_event("stopped")
         logger.info("Web terminal server stopped")
 
-    async def open_terminal(self):
-        """
-        Close all existing terminal tabs, then open exactly one fresh tab.
-        Always runs supersede-then-open so we never stack a second tab.
-        """
-        if not self.is_running():
-            self.start()  # starts server only, does NOT open a browser
-        # Close any existing tabs first. Connected tabs run window.close()
-        # on the session_superseded message (same path used on WS drop).
-        await self._ws_manager.broadcast_session_superseded()
-        # Give existing tabs a moment to actually close before opening a new one.
-        await asyncio.sleep(0.5)
-        # Open exactly one fresh tab.
-        url = f"http://{self.config.server.host}:{self.config.server.port}"
-        webbrowser.open(url)
-        logger.info(f"Opened fresh terminal tab: {url}")
-        # Delay to allow browser tab to open and WebSocket to connect
-        await asyncio.sleep(2.0)
+    def notify_handover(self, timeout: float = 2.0):
+        """Tell every open tab that another session is taking over (tabs then
+        reconnect to the new owner). Callable from any thread."""
+        self._run_on_server_loop(self._ws_manager.broadcast_handover(), timeout)
 
-    def _run_web_server(self):
-        """Run NiceGUI web server (runs in separate thread)"""
+    def notify_shutdown(self, timeout: float = 1.0):
+        """Tell every open tab that this session is ending, so the tab closes
+        itself instead of waiting to reconnect. Callable from any thread; kept
+        short because the client may kill the process soon after."""
+        self._run_on_server_loop(self._ws_manager.broadcast_shutdown(), timeout)
+
+    async def notice(self, text: str):
+        """Show a one-line notice in every open tab (awaited on the caller's
+        loop, delivered on the server's)."""
+        loop = self._loop
+        if not self.is_running() or loop is None:
+            return
         try:
-            old_stdout = sys.stdout
-            sys.stdout = sys.stderr
-
-            from nicegui import ui, app
-            from starlette.websockets import WebSocket
-
-            # Configure static files
-            # static_dir is in src/static, go up one level from web/ directory
-            static_dir = os.path.join(os.path.dirname(__file__), '..', 'static')
-
-            if os.path.exists(static_dir):
-                app.add_static_files('/static', static_dir)
-                logger.info(f"Serving static files from: {static_dir}")
-            else:
-                logger.warning(f"Static directory not found: {static_dir}")
-
-            # WebSocket endpoint for terminal synchronization
-            @app.websocket('/ws/terminal')
-            async def websocket_endpoint(websocket: WebSocket):
-                """WebSocket endpoint for bidirectional terminal communication"""
-                await websocket.accept()
-                await self._ws_manager.handle_websocket(websocket)
-
-            # Create terminal UI page
-            create_terminal_page(ui, self)
-
-            ui.run(
-                host=self.config.server.host,
-                port=self.config.server.port,
-                title='PowerShell Terminal',
-                show=False,
-                reload=False,
-                timeout_graceful_shutdown=1
-            )
-
-            sys.stdout = old_stdout
-
+            fut = asyncio.run_coroutine_threadsafe(self._ws_manager.broadcast_notice(text), loop)
+            await asyncio.wrap_future(fut)
         except Exception as e:
-            logger.error(f"Web server error: {e}", exc_info=True)
-            self.shared_state.web_server_running = False
+            logger.debug("notice broadcast failed: %s", e)
+
+    def _run_on_server_loop(self, coro, timeout: float):
+        """Run a broadcast coroutine on the web server's event loop and wait."""
+        loop = self._loop
+        if not self.is_running() or loop is None:
+            coro.close()
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+        except Exception as e:
+            logger.debug("tab broadcast failed: %s", e)
+
+    # --- tabs ---------------------------------------------------------------
+
+    async def wait_for_client(self, timeout: float) -> bool:
+        """Wait until a tab connects (e.g. an old tab reconnecting after a
+        take-over). Returns True if one did."""
+        start = time.time()
+        deadline = start + timeout
+        found = False
+        while time.time() < deadline:
+            if self.has_connected_clients():
+                found = True
+                break
+            await asyncio.sleep(0.1)
+        found = found or self.has_connected_clients()
+        log_event("wait_for_client", found=found, waited=time.time() - start,
+                  limit=float(timeout))
+        return found
+
+    async def wait_for_visible(self, timeout: float) -> bool:
+        """Give connected tabs a moment to report whether they are visible
+        (they do so right after connecting). True if one is."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.has_visible_clients():
+                return True
+            await asyncio.sleep(0.05)
+        return self.has_visible_clients()
+
+    async def open_terminal(self, reason: str = ""):
+        """Ask existing tabs to step aside, then open exactly one fresh tab.
+        (The MCP layer only calls this when no tab is connected, so the
+        step-aside message is a safety net.)"""
+        if not self.is_running():
+            if not self.start():
+                return
+        loop = self._loop
+        if loop is not None and self.has_connected_clients():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast_session_superseded(), loop)
+                await asyncio.wrap_future(fut)
+                log_event("superseded_sent")
+            except Exception as e:
+                logger.debug("superseded broadcast failed: %s", e)
+            await asyncio.sleep(0.5)
+        log_event("open_tab", reason=reason or "unspecified",
+                  tabs=len(self._ws_manager.active_websockets))
+        webbrowser.open(self.url)
+        logger.info("Opened terminal tab: %s", self.url)
+        # Give the tab time to load and connect its WebSocket.
+        await self.wait_for_client(3.0)
+
+    # --- app ----------------------------------------------------------------
+
+    def _build_app(self):
+        """Routes: page, static files, terminal WebSocket, release endpoint."""
+        from starlette.applications import Starlette
+        from starlette.responses import HTMLResponse, JSONResponse
+        from starlette.routing import Mount, Route, WebSocketRoute
+        from starlette.staticfiles import StaticFiles
+
+        async def index(request):
+            return HTMLResponse(render_index_html(self.owner_label))
+
+        async def websocket_endpoint(websocket):
+            await websocket.accept()
+            # Tell the tab who owns the terminal now (a reconnecting tab may
+            # have been showing another session).
+            try:
+                await websocket.send_json({'type': 'owner', 'label': self.owner_label,
+                                           'pid': os.getpid()})
+            except Exception:
+                pass
+            log_event("tab_connected", tabs=len(self._ws_manager.active_websockets) + 1)
+            try:
+                await self._ws_manager.handle_websocket(websocket)
+            finally:
+                log_event("tab_disconnected", tabs=len(self._ws_manager.active_websockets))
+
+        async def release(request):
+            # Token must match the owner file. A browser page cannot send this
+            # custom header cross-origin (no CORS preflight answer), so only a
+            # local process that can read the owner file gets here.
+            if not self._token or request.headers.get(ownership.TOKEN_HEADER) != self._token:
+                log_event("release_forbidden")
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+            log_event("release_received", tabs=len(self._ws_manager.active_websockets))
+            logger.info("Release requested by another session; handing over the web terminal")
+            threading.Thread(target=self._do_release, daemon=True,
+                             name="web-terminal-release").start()
+            return JSONResponse({"releasing": True})
+
+        routes = [
+            Route('/', index),
+            Route('/api/release', release, methods=['POST']),
+            WebSocketRoute('/ws/terminal', websocket_endpoint),
+        ]
+        if os.path.isdir(STATIC_DIR):
+            routes.append(Mount('/static', StaticFiles(directory=STATIC_DIR), name='static'))
+        else:
+            logger.warning("Static directory not found: %s", STATIC_DIR)
+        return Starlette(routes=routes)
+
+    def _do_release(self):
+        """Runs off the server thread so stop() can join it."""
+        time.sleep(0.1)   # let the HTTP reply go out first
+        try:
+            if self.on_release:
+                self.on_release()
+            else:
+                self.notify_handover()
+                self.stop()
+        except Exception:
+            logger.exception("release failed")
+            self.stop()

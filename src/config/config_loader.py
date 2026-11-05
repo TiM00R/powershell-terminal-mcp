@@ -64,8 +64,7 @@ class Config:
         # Buffer configuration
         buffer_data = self._raw_config.get('buffer', {})
         self.buffer = BufferConfig(
-            max_lines=buffer_data.get('max_lines', 10000),
-            cleanup_on_full=buffer_data.get('cleanup_on_full', True)
+            max_lines=buffer_data.get('max_lines', 10000)
         )
 
         # Claude configuration
@@ -90,10 +89,10 @@ class Config:
         self.server = ServerConfig(
             host=server_data.get('host', 'localhost'),
             port=server_data.get('port', 8090),
-            auto_open_browser=server_data.get('auto_open_browser', True),
             debug=server_data.get('debug', False),
             replay_lines=server_data.get('replay_lines', 40),
-            replay_max_bytes=server_data.get('replay_max_bytes', 8192)
+            replay_max_bytes=server_data.get('replay_max_bytes', 8192),
+            event_log=bool(server_data.get('event_log', False)),
         )
 
         # Database (local SQLite command store)

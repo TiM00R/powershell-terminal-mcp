@@ -5,7 +5,6 @@
 # Output Buffer Configuration
 buffer:
   max_lines: 500
-  cleanup_on_full: true
 
 # Claude AI Integration Configuration
 claude:
@@ -73,7 +72,6 @@ interactive:
 server:
   host: "localhost"
   port: 8090           # MCP web terminal (8090 to avoid colliding with remote-terminal's 8080)
-  auto_open_browser: true
   # On-connect screen replay (fixes blank/mis-positioned reopened tabs). When a
   # web client connects it is sent the current screen (colored, faithful).
   #   -1 = full buffer from session start (cursor-safe, cannot desync; slower on a
@@ -81,6 +79,9 @@ server:
   #   N  = last N lines (fast/small, byte-capped, may desync inside TUI/alt-screen).
   replay_lines: -1
   replay_max_bytes: 8192   # byte cap; applies to the N>0 mode only (ignored when -1)
+  # Diagnostic log of take-overs and tab events, written to
+  # %LOCALAPPDATA%\powershell-terminal\web.log (capped at ~2 MB). Off normally.
+  event_log: false
 
 # Local SQLite command store (history / emergency forensics).
 # path: null -> use <project_root>/data/commands.db (default, relative to install).

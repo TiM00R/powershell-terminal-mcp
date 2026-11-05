@@ -1,6 +1,6 @@
 /**
- * Remote Terminal - WebSocket Edition
- * FIXED: Properly closes WebSocket on page unload to prevent zombie connections
+ * PowerShell Terminal - xterm.js client over a WebSocket.
+ * Reconnects automatically, including when another Claude session takes over.
  */
 
 (async function() {
@@ -35,102 +35,215 @@
     // ConPTY so cursor rows stay in sync). No client-side banner here.
     
     // ========== WEBSOCKET CONNECTION ==========
-    
+    //
+    // Several Claude sessions can share this port: the latest one to use the
+    // terminal owns it. When ownership moves, the old owner sends
+    // 'session_handover' and stops; this tab then reconnects to the new owner,
+    // which clears the screen and replays its own shell. When the Claude session
+    // ends, the server sends 'server_shutdown' and the tab closes itself; if the
+    // server just disappears (killed), the tab retries for DISCONNECT_WINDOW_MS
+    // and then closes. Browsers may refuse to close a tab (e.g. one you navigated
+    // in); the tab then says so instead.
+
+    const DISCONNECT_WINDOW_MS = 5000;    // server gone: retry this long, then close
+    const HANDOVER_WINDOW_MS = 20000;     // take-over: new owner normally answers in ~2 s
+    const RECONNECT_DELAY_MS = 500;
+    const CONNECT_TIMEOUT_MS = 1000;      // abandon an attempt Windows is slow to refuse
+    const HANDOVER_PAUSE_MS = 1500;   // keep the take-over notice readable
+
     let ws = null;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 10;
     let intentionalClose = false;
-    
+    let pauseUntil = 0;            // no reconnect attempt before this time
+    let reconnectDeadline = 0;     // 0 = not currently reconnecting
+    let reconnectTimer = null;
+    let everConnected = false;
+
     function connectWebSocket() {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/terminal`;
-        
-        ws = new WebSocket(wsUrl);
-        
-        ws.onopen = () => {
+        const sock = new WebSocket(`${protocol}//${window.location.host}/ws/terminal`);
+        ws = sock;
+        // Windows takes ~2 s per address (~4 s for 'localhost') to refuse a
+        // connection when nothing is listening yet -- e.g. during a take-over,
+        // just before the new owner binds the port. A local server answers in
+        // milliseconds, so an attempt still pending after 1 s is abandoned and
+        // the reconnect loop tries again right away.
+        setTimeout(() => {
+            if (sock === ws && sock.readyState === WebSocket.CONNECTING) {
+                ws = null;
+                try { sock.close(); } catch (e) { /* ignore */ }
+                if (!intentionalClose) startReconnect(false, DISCONNECT_WINDOW_MS);
+            }
+        }, CONNECT_TIMEOUT_MS);
+
+        sock.onopen = () => {
+            if (sock !== ws) return;
             console.log('WebSocket connected');
-            reconnectAttempts = 0;
+            if (everConnected) {
+                // Reconnected (possibly to a different session): start clean.
+                // The server replays the current screen right after this.
+                term.reset();
+            }
+            everConnected = true;
+            reconnectDeadline = 0;
             // The initial fitAddon.fit() fired before the socket was open, so its
             // resize was dropped and ConPTY is still at its spawn size. Re-send the
             // current size now so ConPTY matches xterm (prevents line-wrap drift).
             try {
-                ws.send(JSON.stringify({
+                sock.send(JSON.stringify({
                     type: 'terminal_resize',
                     cols: term.cols,
                     rows: term.rows
                 }));
             } catch (e) { console.warn('initial resize send failed:', e); }
+            sendVisibility();
         };
-        
-        ws.onmessage = (event) => {
+
+        sock.onmessage = (event) => {
+            if (sock !== ws) return;
             try {
                 const message = JSON.parse(event.data);
-                
+
                 if (message.type === 'terminal_output') {
                     term.write(message.data);
                 }
+                else if (message.type === 'session_handover') {
+                    term.writeln('\r\n\x1b[33m-- Terminal taken over by another Claude session, reconnecting... --\x1b[0m');
+                    pauseUntil = Date.now() + HANDOVER_PAUSE_MS;
+                    startReconnect(false, HANDOVER_WINDOW_MS);
+                }
                 else if (message.type === 'session_superseded') {
-                    intentionalClose = true;
-                    ws.close();
-                    window.close();
+                    // A fresh tab was opened on purpose; step aside.
+                    closeTab('This terminal was reopened in a new tab.');
+                }
+                else if (message.type === 'server_shutdown') {
+                    closeTab('Claude session ended.');
+                }
+                else if (message.type === 'notice') {
+                    // Shown in the header, not the terminal: writing lines the
+                    // shell doesn't know about would leave no prompt and could
+                    // throw off later redraws.
+                    flashHeader(message.text || '');
+                }
+                else if (message.type === 'owner') {
+                    // Which Claude session owns the terminal now.
+                    const label = message.label || '';
+                    document.title = label ? `PowerShell Terminal — ${label}` : 'PowerShell Terminal';
+                    const el = document.getElementById('pt-owner');
+                    if (el) {
+                        el.dataset.label = label;
+                        if (!flashTimer) el.textContent = label;
+                        el.title = message.pid ? `MCP server process ${message.pid}` : '';
+                    }
                 }
                 else if (message.type === 'connection') {
                     console.log('Connection status:', message.status);
                 }
-                
             } catch (e) {
                 console.error('Error processing WebSocket message:', e);
             }
         };
-        
-        ws.onerror = (error) => {
+
+        sock.onerror = (error) => {
             console.error('WebSocket error:', error);
         };
-        
 
-    ws.onclose = () => {
-        console.log("WebSocket closed");
-
-        if (intentionalClose) {
-            console.log("Intentional close, ignoring.");
-            return;
-        }
-
-        term.writeln("\r\n✗ WebSocket disconnected (server offline)");
-        
-        // Try to close the window, but detect if it fails
-        const canClose = window.close(); 
-
-        // If the browser rejected the close request (tab not opened via JS)
-        if (!canClose) {
-            term.writeln("  Unable to auto-close this tab. Please close manually.");
-            // Stop further reconnect attempts or repeated messages
-            ws = null;
-            return;
-        }
-
-        // If close succeeded, do nothing further
-        setTimeout(() => {}, 2000);
-    };
-
+        sock.onclose = () => {
+            if (sock !== ws) return;
+            console.log('WebSocket closed');
+            if (intentionalClose) {
+                console.log('Intentional close, ignoring.');
+                return;
+            }
+            startReconnect(true, DISCONNECT_WINDOW_MS);
+        };
     }
-    
-    // FIXED: Close WebSocket when page unloads
+
+    function sendVisibility() {
+        // Tell the server whether this tab is on screen. open_terminal reuses
+        // only a visible tab; a hidden one (background tab, minimized window,
+        // a browser pane nobody looks at) would otherwise hide the terminal.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+                ws.send(JSON.stringify({ type: 'visibility', visible: !document.hidden }));
+            } catch (e) { /* ignore */ }
+        }
+    }
+
+    let flashTimer = null;
+    function flashHeader(text) {
+        // Briefly replace the owner label with a highlighted notice.
+        const el = document.getElementById('pt-owner');
+        if (!el) return;
+        if (!flashTimer) el.dataset.label = el.textContent;
+        el.textContent = text;
+        el.classList.add('flash');
+        clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => {
+            el.classList.remove('flash');
+            el.textContent = el.dataset.label || '';
+            flashTimer = null;
+        }, 3000);
+    }
+
+    function closeTab(reason) {
+        // Stop for good, then try to close the tab. Browsers allow this for a
+        // tab with a single history entry (how the terminal tab is opened);
+        // otherwise leave one clear line instead.
+        intentionalClose = true;
+        reconnectDeadline = 0;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        try { if (ws) ws.close(); } catch (e) { /* already closed */ }
+        window.close();
+        setTimeout(() => {
+            term.writeln('\r\n\x1b[33m-- ' + reason + ' You can close this tab. --\x1b[0m');
+        }, 300);
+    }
+
+    function startReconnect(announce, windowMs) {
+        if (reconnectDeadline === 0) {
+            reconnectDeadline = Date.now() + windowMs;
+            if (announce) {
+                term.writeln('\r\n\x1b[33m-- Disconnected, reconnecting... --\x1b[0m');
+            }
+        }
+        scheduleReconnect();
+    }
+
+    function scheduleReconnect() {
+        if (reconnectTimer) return;
+        const delay = Math.max(RECONNECT_DELAY_MS, pauseUntil - Date.now());
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+            if (reconnectDeadline && Date.now() > reconnectDeadline) {
+                closeTab('Claude session ended.');
+                return;
+            }
+            connectWebSocket();
+            scheduleReconnect();   // keep trying until onopen or the window ends
+        }, delay);
+    }
+
+    // Close the WebSocket when the page unloads
     window.addEventListener('beforeunload', () => {
         intentionalClose = true;
         if (ws && ws.readyState === WebSocket.OPEN) {
-            console.log('Closing WebSocket due to page unload');
             ws.close();
         }
     });
-    
-    // FIXED: Force reconnect when tab becomes visible again (handles server restart)
+
+    // Reconnect when the tab becomes visible with a dead connection (covers a
+    // tab that gave up while hidden).
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
+        sendVisibility();
+        if (!document.hidden && !intentionalClose && ws && ws.readyState !== WebSocket.OPEN) {
             console.log('Tab became visible with dead connection - forcing reconnect');
-            intentionalClose = false;
-            reconnectAttempts = 0;
-            connectWebSocket();
+            reconnectDeadline = 0;
+            startReconnect(false, DISCONNECT_WINDOW_MS);
+            if (Date.now() >= pauseUntil) connectWebSocket();
         }
     });
 

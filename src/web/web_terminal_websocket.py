@@ -25,6 +25,9 @@ class WebSocketManager:
         self.active_websockets: Set = set()
         self._ws_lock = threading.Lock()
         self._broadcast_task = None
+        # Tabs that last reported being on screen. A tab that never reported
+        # (e.g. still running an older page script) counts as hidden.
+        self.visible_websockets: Set = set()
 
     async def handle_websocket(self, websocket):
         """
@@ -37,6 +40,11 @@ class WebSocketManager:
         # Add to active connections
         with self._ws_lock:
             self.active_websockets.add(websocket)
+
+            # First tab: everything queued while nobody watched is already part
+            # of the replay sent below, so drop it instead of drawing it twice.
+            if len(self.active_websockets) == 1:
+                self.shared_state.clear_output_queue()
 
             # Start (or restart) the broadcast loop if it is not currently
             # running. The loop can exit if the first client connects before
@@ -86,6 +94,13 @@ class WebSocketManager:
                             self.shared_state.send_manual_input(input_data)
                             logger.debug(f"Forwarded input: {repr(input_data[:20])}")
 
+                    elif message.get('type') == 'visibility':
+                        with self._ws_lock:
+                            if message.get('visible'):
+                                self.visible_websockets.add(websocket)
+                            else:
+                                self.visible_websockets.discard(websocket)
+
                     elif message.get('type') == 'terminal_resize':
                         # Terminal resized -> resize the ConPTY.
                         cols = message.get('cols')
@@ -110,6 +125,7 @@ class WebSocketManager:
             # Remove from active connections
             with self._ws_lock:
                 self.active_websockets.discard(websocket)
+                self.visible_websockets.discard(websocket)
 
             logger.info(f"WebSocket disconnected: {client_id} (remaining: {len(self.active_websockets)})")
 
@@ -132,21 +148,27 @@ class WebSocketManager:
                         'data': output
                     }
 
+                    # Copy the tab list under the lock, send without it: the
+                    # lock is a thread lock, and holding it across an await
+                    # would freeze this loop's thread if another coroutine
+                    # (a tab connecting or closing) tried to take it meanwhile.
                     with self._ws_lock:
-                        active_count = len(self.active_websockets)
-                        if active_count > 0:
-                            logger.debug(f"Broadcasting {len(output)} bytes to {active_count} WebSocket(s)")
+                        send_to = list(self.active_websockets)
+                    if send_to:
+                        logger.debug(f"Broadcasting {len(output)} bytes to {len(send_to)} WebSocket(s)")
 
-                        disconnected = set()
-                        for ws in self.active_websockets:
-                            try:
-                                await ws.send_json(message)
-                            except Exception as e:
-                                logger.debug(f"WebSocket send failed: {e}")
-                                disconnected.add(ws)
+                    disconnected = set()
+                    for ws in send_to:
+                        try:
+                            await ws.send_json(message)
+                        except Exception as e:
+                            logger.debug(f"WebSocket send failed: {e}")
+                            disconnected.add(ws)
 
-                        # Clean up disconnected WebSockets
-                        self.active_websockets -= disconnected
+                    # Clean up disconnected WebSockets
+                    if disconnected:
+                        with self._ws_lock:
+                            self.active_websockets -= disconnected
 
                 # Poll every 50ms (same as original HTTP polling)
                 await asyncio.sleep(0.05)
@@ -168,39 +190,39 @@ class WebSocketManager:
         }
 
         with self._ws_lock:
-            send_to = targets if targets is not None else set(self.active_websockets)
-            disconnected = set()
-            for ws in send_to:
-                try:
-                    await ws.send_json(message)
-                except Exception as e:
-                    logger.debug(f"Failed to send session_superseded: {e}")
-                    disconnected.add(ws)
+            send_to = set(targets) if targets is not None else set(self.active_websockets)
+        disconnected = set()
+        for ws in send_to:
+            try:
+                await ws.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send session_superseded: {e}")
+                disconnected.add(ws)
+        if disconnected:
+            with self._ws_lock:
+                self.active_websockets -= disconnected
 
-            self.active_websockets -= disconnected
+    async def broadcast_handover(self):
+        """Tell every tab that another Claude session is taking over this
+        terminal. Tabs show a notice and reconnect to the new owner; the server
+        closing their sockets right after is expected."""
+        await self.broadcast({'type': 'session_handover'})
 
-    def close_all(self):
-        """Close all active WebSocket connections"""
+    async def broadcast_shutdown(self):
+        """Tell every tab that this Claude session is ending; tabs close
+        themselves (or say so if the browser does not allow it)."""
+        await self.broadcast({'type': 'server_shutdown'})
+
+    async def broadcast_notice(self, text):
+        """Show a one-line notice in every tab (e.g. 'terminal requested')."""
+        await self.broadcast({'type': 'notice', 'text': text})
+
+    async def broadcast(self, message):
+        """Send one JSON message to every connected tab."""
         with self._ws_lock:
-            websocket_count = len(self.active_websockets)
-            if websocket_count > 0:
-                logger.info(f"Closing {websocket_count} active WebSocket connection(s)...")
-
-                # Create a copy of the set to avoid modification during iteration
-                websockets_to_close = list(self.active_websockets)
-
-                for ws in websockets_to_close:
-                    try:
-                        # Send shutdown message
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(ws.send_json({
-                            'type': 'server_shutdown',
-                            'message': 'Server is shutting down'
-                        }))
-                        loop.run_until_complete(ws.close())
-                        loop.close()
-                    except Exception as e:
-                        logger.debug(f"Error closing WebSocket: {e}")
-
-                self.active_websockets.clear()
-                logger.info(f"Closed {websocket_count} WebSocket connection(s)")
+            send_to = set(self.active_websockets)
+        for ws in send_to:
+            try:
+                await ws.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send {message.get('type')}: {e}")

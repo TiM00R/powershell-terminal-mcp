@@ -26,7 +26,10 @@ ENCODING_SETUP = (
     # Restore PATHEXT in case the MCP server inherited a stripped-down value (e.g. only .CPL).
     # Without .EXE in PATHEXT, bare command names like 'git' and 'ipconfig' are not resolved.
     "$env:PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC'\n"
-    "$__start = $env:POWERSHELL_TERMINAL_HOME\n"
+    # PT_START_DIR: the client's project folder (MCP roots), set only for this shell.
+    "$__start = $env:PT_START_DIR\n"
+    "Remove-Item Env:PT_START_DIR -ErrorAction SilentlyContinue\n"
+    "if (-not $__start) { $__start = $env:POWERSHELL_TERMINAL_HOME }\n"
     "if (-not $__start) { $__start = $HOME }\n"
     "if (-not $__start) { $__start = $env:USERPROFILE }\n"
     "if ($__start -and (Test-Path $__start)) { Set-Location $__start }\n"
@@ -60,6 +63,8 @@ NATIVE_WRAPPERS = (
     "    $psi = [System.Diagnostics.ProcessStartInfo]::new($__live)\n"
     "    $psi.UseShellExecute = $false\n"
     "    $psi.CreateNoWindow = $true\n"
+    # Start in the shell's current folder (cd does not change the process folder).
+    "    $psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath\n"
     "    $psi.RedirectStandardInput = $true\n"
     "    $psi.RedirectStandardOutput = $true\n"
     "    $psi.RedirectStandardError = $true\n"
@@ -129,7 +134,7 @@ NATIVE_EXE_HOOK = (
     "        $funcName = $Name\n"
     "      }\n"
     "      $exeQ = $exe.Replace(\"'\", \"''\")\n"
-    "      $code = \"param(); `$psi = [System.Diagnostics.ProcessStartInfo]::new('$exeQ'); `$psi.UseShellExecute = `$false; `$psi.CreateNoWindow = `$true; `$psi.RedirectStandardInput = `$true; `$psi.RedirectStandardOutput = `$true; `$psi.RedirectStandardError = `$true; foreach (`$a in `$args) { `$psi.ArgumentList.Add(`$a) }; `$proc = [System.Diagnostics.Process]::Start(`$psi); if (`$proc) { `$proc.StandardInput.Close(); `$outTask = `$proc.StandardOutput.ReadToEndAsync(); `$errTask = `$proc.StandardError.ReadToEndAsync(); `$proc.WaitForExit(); [System.Threading.Tasks.Task]::WhenAll(`$outTask,`$errTask) | Out-Null; if (`$outTask.Result) { `$outTask.Result.Split([char]10) | ForEach-Object { `$_.TrimEnd([char]13) } }; if (`$errTask.Result) { [Console]::Error.Write(`$errTask.Result) }; `$global:LASTEXITCODE = `$proc.ExitCode }\"\n"
+    "      $code = \"param(); `$psi = [System.Diagnostics.ProcessStartInfo]::new('$exeQ'); `$psi.UseShellExecute = `$false; `$psi.CreateNoWindow = `$true; `$psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath; `$psi.RedirectStandardInput = `$true; `$psi.RedirectStandardOutput = `$true; `$psi.RedirectStandardError = `$true; foreach (`$a in `$args) { `$psi.ArgumentList.Add(`$a) }; `$proc = [System.Diagnostics.Process]::Start(`$psi); if (`$proc) { `$proc.StandardInput.Close(); `$outTask = `$proc.StandardOutput.ReadToEndAsync(); `$errTask = `$proc.StandardError.ReadToEndAsync(); `$proc.WaitForExit(); [System.Threading.Tasks.Task]::WhenAll(`$outTask,`$errTask) | Out-Null; if (`$outTask.Result) { `$outTask.Result.Split([char]10) | ForEach-Object { `$_.TrimEnd([char]13) } }; if (`$errTask.Result) { [Console]::Error.Write(`$errTask.Result) }; `$global:LASTEXITCODE = `$proc.ExitCode }\"\n"
     "      $fn = [scriptblock]::Create($code)\n"
     "      New-Item -Force -Path Function: -Name $funcName -Value $fn | Out-Null\n"
     "      $fi = $ExecutionContext.InvokeCommand.GetCommand($funcName, 'Function')\n"
@@ -178,9 +183,16 @@ def spawn_command(shell):
     return shell + " -NoLogo"
 
 
-def spawn(shell_cmd, dimensions=DEFAULT_DIMENSIONS):
-    """Spawn the shell inside a ConPTY and return the PtyProcess."""
-    logger.debug("spawning ConPTY: %s dims=%s", shell_cmd, dimensions)
+def spawn(shell_cmd, dimensions=DEFAULT_DIMENSIONS, start_dir=None):
+    """Spawn the shell inside a ConPTY and return the PtyProcess.
+
+    start_dir (optional): folder the shell should open in. The process starts
+    there, and the init script moves there too (via PT_START_DIR, so no path
+    has to be quoted into the script)."""
+    logger.debug("spawning ConPTY: %s dims=%s start_dir=%s", shell_cmd, dimensions, start_dir)
+    if start_dir and os.path.isdir(start_dir):
+        env = dict(os.environ, PT_START_DIR=start_dir)
+        return PtyProcess.spawn(shell_cmd, cwd=start_dir, env=env, dimensions=dimensions)
     return PtyProcess.spawn(shell_cmd, dimensions=dimensions)
 
 

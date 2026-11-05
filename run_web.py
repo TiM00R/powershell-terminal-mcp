@@ -1,12 +1,17 @@
 """
-run_web.py - manual launcher for the web terminal increment.
+run_web.py - manual launcher for the web terminal (no Claude needed).
 Loads config, builds the shared state hub, starts the local pwsh session, then
-launches the web terminal (opens a browser). Lets you:
+serves the web terminal. It does not open a browser; open the printed URL
+yourself. Lets you:
   - watch AI-issued commands stream into the browser, and
   - type commands manually in the browser (raw passthrough).
 
 Run after setup_venv.ps1:
-    .\.venv\Scripts\python.exe run_web.py
+    .\.venv\Scripts\python.exe run_web.py          # port from config.yaml
+    .\.venv\Scripts\python.exe run_web.py 8095     # another port
+
+Use another port while Claude has the terminal open: the configured port is
+then already taken.
 
 Type 'ai <command>' at this console to issue an AI command into the shared session
 (you should see it appear in the browser). Type 'quit' to exit. Plain ASCII.
@@ -25,11 +30,13 @@ from web.web_terminal import WebTerminalServer      # noqa: E402
 
 def main():
     config = Config("config.yaml")
-    # Force the isolated port even if config.yaml still carries the old 8080.
-    config.server.port = getattr(config.server, "port", 8090) or 8090
-    if config.server.port == 8080:
-        config.server.port = 8090
     config.server.host = config.server.host or "127.0.0.1"
+    if len(sys.argv) > 1:
+        try:
+            config.server.port = int(sys.argv[1])
+        except ValueError:
+            print("Usage: run_web.py [port]")
+            return 2
 
     state = get_shared_state()
     state.initialize(config)
@@ -37,12 +44,18 @@ def main():
     print("Starting pwsh session...")
     if not state.start_session():
         print("FAIL: session did not settle.")
-        return
+        return 1
     print("Session ready.")
 
     server = WebTerminalServer(state, config)
-    print("Starting web terminal at http://%s:%s ..." % (config.server.host, config.server.port))
-    server.start()  # opens browser
+    print("Starting web terminal on port %s ..." % config.server.port)
+    ok, err = server.try_start()
+    if not ok:
+        print("FAIL: web terminal could not start: %s" % err)
+        print("If Claude has the terminal open, pass another port: run_web.py 8095")
+        state.close_session()
+        return 1
+    print("Open %s in your browser." % server.url)
 
     print("")
     print("Type 'ai <command>' to run an AI command into the session.")
@@ -60,10 +73,11 @@ def main():
         pass
     finally:
         print("Shutting down...")
+        server.notify_shutdown()
         server.stop()
         state.close_session()
         time.sleep(0.3)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

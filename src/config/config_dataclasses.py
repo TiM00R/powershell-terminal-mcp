@@ -11,7 +11,6 @@ from typing import Dict
 class BufferConfig:
     """Output buffer configuration"""
     max_lines: int = 10000
-    cleanup_on_full: bool = True
 
 
 @dataclass
@@ -94,13 +93,15 @@ class ServerConfig:
     """Web server configuration"""
     host: str = "localhost"
     port: int = 8090
-    auto_open_browser: bool = True
     debug: bool = False
     # Web terminal on-connect replay (fixes blank reopened tabs). replay_lines:
     # -1 = full buffer (faithful, cursor-safe), 0 = current prompt line only,
     # N = last N lines (byte-capped by replay_max_bytes).
     replay_lines: int = 40
     replay_max_bytes: int = 8192
+    # Diagnostic log of take-overs and tab events (web.log next to the owner
+    # file). Off in normal use.
+    event_log: bool = False
 
 
 @dataclass

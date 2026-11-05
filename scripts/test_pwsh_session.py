@@ -10,7 +10,6 @@ Plain ASCII. No curl.
 
 import os
 import sys
-import time
 
 # Make src importable (internal imports are top-level: pwsh.*, completion_token).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))

@@ -11,7 +11,7 @@ behavior for each tool lives in PowerShellTerminalMCP._dispatch (mcp_server.py),
 matched by the tool `name`. Keep the names here in sync with the `if name == ...`
 branches there.
 
-Only depends on mcp.types (no session / nicegui / stdout side effects), so it is safe
+Only depends on mcp.types (no session / web server / stdout side effects), so it is safe
 to import at the top of mcp_server.py alongside the other mcp imports.
 """
 
@@ -170,10 +170,20 @@ def build_tool_list():
         ),
         types.Tool(
             name="open_terminal",
-            description="Open (or re-open) the web terminal in the browser. "
-                        "Starts the web server if not running, then opens a fresh "
-                        "browser tab. Use this whenever the user asks to see or open "
-                        "the terminal.",
-            inputSchema={"type": "object", "properties": {}},
+            description="Show the web terminal in the browser. Reuses an open, "
+                        "visible terminal tab (its header briefly shows 'Terminal "
+                        "requested'); otherwise opens a new tab. Use this whenever "
+                        "the user asks to see or open the terminal. Never open the "
+                        "terminal URL yourself (e.g. Start-Process or a browser tool); "
+                        "that creates duplicate tabs. This tool is the only way to "
+                        "show the terminal.",
+            inputSchema={"type": "object", "properties": {
+                "reopen": {"type": "boolean",
+                           "description": "Close the open terminal tab(s) and open one "
+                                          "fresh tab in front. ONLY when the user "
+                                          "explicitly asks to reopen the terminal or "
+                                          "says they cannot find the terminal tab; "
+                                          "never otherwise (default false)."},
+            }},
         ),
     ]

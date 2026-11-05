@@ -2,7 +2,7 @@
 test_mcp_dispatch.py - headless test of mcp_server tool dispatch (no MCP client).
 
 Exercises the server's _dispatch logic, JSON shapes, the _outputs registry, the
-send_input -> wait_more path, and _ensure_started (web + session start on first
+send_input -> wait_more path, and _ensure_owner (web + session start on first
 call) WITHOUT Claude Desktop, so we don't pay a restart per change. The only thing
 this does NOT cover is the stdio JSON-RPC transport itself (library code).
 
@@ -42,16 +42,17 @@ async def main():
 
     # Avoid opening a browser / binding the web port during the headless test:
     # stub the web server start to a no-op, but still let the session start.
-    srv.web_server.start = lambda: None
+    srv.web_server.try_start = lambda **kw: (True, None)
 
-    print("get_terminal_status (triggers _ensure_started: session start)")
+    print("get_terminal_status (read-only: must NOT start the session / claim the port)")
     r = _parse(await srv._dispatch("get_terminal_status", {}))
-    check("alive true", r.get("alive") is True)
+    check("not started by status", r.get("alive") is False)
     check("web_url present", "web_url" in r)
     print("  ->", r)
 
-    print("execute_command: simple")
+    print("execute_command: simple (triggers _ensure_owner: session start)")
     r = _parse(await srv._dispatch("execute_command", {"command": "Write-Output 'mcp-hello'"}))
+    check("alive after first shell tool", srv.state.is_alive())
     check("status completed", r.get("status") == "completed")
     check("exit 0", r.get("exit_code") == 0)
     check("output contains hello", "mcp-hello" in (r.get("output") or ""))

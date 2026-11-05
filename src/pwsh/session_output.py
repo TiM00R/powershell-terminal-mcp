@@ -40,10 +40,10 @@ class SessionOutput:
 
     # --- lifecycle ----------------------------------------------------------
 
-    def start(self):
+    def start(self, start_dir=None):
         """Pass-through to the session; kept so callers never reach past this
         facade to the PwshSession underneath."""
-        return self.session.start()
+        return self.session.start(start_dir=start_dir)
 
     def restart(self):
         """Replace the shell process while keeping this object (and the web

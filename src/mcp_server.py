@@ -9,7 +9,7 @@ keeping the blocking session work off the event loop.
 Two details here are load-bearing:
   - stdout IS the JSON-RPC channel, so it is redirected to stderr around the
     imports; a stray print from a dependency would otherwise corrupt the protocol.
-  - Session startup is lazy (_ensure_started), so the shell and web terminal only
+  - Session startup is lazy (_ensure_owner), so the shell and web terminal only
     appear when a tool is actually used, not when the client loads the server.
 """
 
@@ -18,6 +18,8 @@ import sys
 import os
 import json
 import shutil
+import threading
+import time
 import uuid
 import logging
 from pathlib import Path
@@ -26,7 +28,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp import types
 
-# Redirect stdout to stderr BEFORE importing nicegui (stdout is the JSON-RPC channel).
+# Redirect stdout to stderr BEFORE importing the web stack (stdout is the JSON-RPC channel).
 _original_stdout = sys.stdout
 sys.stdout = sys.stderr
 
@@ -40,6 +42,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config.config_loader import Config           # noqa: E402
 from shared_state import get_shared_state          # noqa: E402
 from web.web_terminal import WebTerminalServer      # noqa: E402
+from web import ownership                           # noqa: E402
+from web import eventlog                            # noqa: E402
+from web.eventlog import log_event                  # noqa: E402
 from tool_schemas import build_tool_list            # noqa: E402  (tool declarations)
 
 sys.stdout = _original_stdout
@@ -63,6 +68,36 @@ def _resolve_config_path():
     return user_cfg
 
 
+# Tools that need this process's shell. Calling one takes the web terminal over
+# from another copy of this server if needed (latest user wins).
+SHELL_TOOLS = {
+    "execute_command", "send_input", "poll", "send_interrupt",
+    "restart_session", "run_script", "open_terminal",
+}
+
+
+# MCP clientInfo.name -> readable name for the web terminal title.
+CLIENT_NAMES = {
+    "claude-ai": "Claude Desktop",                       # Desktop chat tab
+    "claude-code": "Claude Code",                        # CLI in a terminal
+    "local-agent-mode": "Claude Code (Desktop app)",     # Desktop Code tab
+}
+
+
+def _file_uri_to_path(uri):
+    """file:///D:/proj -> D:\\proj (also file://server/share -> \\\\server\\share).
+    None for anything that is not a file URI."""
+    from urllib.parse import urlparse, unquote
+    from urllib.request import url2pathname
+    p = urlparse(uri)
+    if p.scheme != "file":
+        return None
+    path = url2pathname(unquote(p.path))
+    if p.netloc and p.netloc.lower() != "localhost":
+        path = "\\\\" + p.netloc + path
+    return path or None
+
+
 def _txt(s):
     """Wrap a string in the content shape MCP expects, so every tool branch below
     can end in one short line."""
@@ -79,7 +114,7 @@ class PowerShellTerminalMCP:
     def __init__(self):
         """Assemble the server: load config, build the session hub and web server,
         and register the MCP handlers. Nothing is started yet -- see
-        _ensure_started.
+        _ensure_owner.
 
         _outputs caches each command's full result by id, which is what lets the AI
         ask for raw output later after receiving a token-reduced version.
@@ -89,23 +124,83 @@ class PowerShellTerminalMCP:
         logger.info("Loading config from: %s", config_file)
         self.config = Config(str(config_file))
         self.state.initialize(self.config)
+        eventlog.configure(self.config.server.event_log)
         self.web_server = WebTerminalServer(self.state, self.config)
+        self.web_server.on_release = self._release
         self.server = Server("powershell-terminal")
         self._outputs = {}   # command_id -> last result dict
         self._started = False
+        self._own_lock = threading.RLock()
+        self._web_warning = None   # why the web terminal is unavailable, if it is
+        self._project_dir = None   # client's project folder (MCP roots), if any
+        self._project_checked = False
         self._setup()
 
-    def _ensure_started(self):
-        """Bring up the shell and web terminal on first tool use.
+    def _ensure_owner(self) -> bool:
+        """Make sure this process owns the web terminal and has a live shell.
 
-        Deferred rather than done in __init__ so merely loading the server (which
-        the client does at launch) never spawns a PowerShell process or pops a
-        browser window.
+        Runs before every tool call. Startup stays lazy (merely loading the server
+        never spawns PowerShell or a browser tab). When another copy of this
+        server holds the port -- another Claude chat or Claude Code session -- we
+        ask it to release (latest user wins), then bind.
+
+        Returns True when we just took the port over from another copy.
         """
-        if not self._started:
-            self.state.start_session()
-            self.web_server.start()  # opens the shared web terminal
-            self._started = True
+        with self._own_lock:
+            # Shell first, port second: tabs that reconnect after a take-over
+            # then find a ready shell and switch once, instead of seeing a blank
+            # screen followed by the new shell's own clear + banner.
+            if not self._started:
+                self.state.start_session(start_dir=self._project_dir)
+                self._started = True
+            took_over = False
+            if not self.web_server.is_running():
+                took_over = self._acquire_port()
+            return took_over
+
+    def _acquire_port(self) -> bool:
+        """Bind the web port, asking its current owner to release if needed."""
+        host, port = self.config.server.host, self.config.server.port
+        ok, err = self.web_server.try_start()
+        if ok:
+            self._web_warning = None
+            return False
+        accepted, reason = ownership.request_release(host, port)
+        log_event("release_sent", accepted=accepted, reason=reason)
+        if accepted:
+            start = time.time()
+            deadline = start + 10
+            tries = 0
+            while time.time() < deadline:
+                time.sleep(0.3)
+                tries += 1
+                ok, err = self.web_server.try_start()
+                if ok:
+                    self._web_warning = None
+                    logger.info("Took over the web terminal on port %s", port)
+                    log_event("took_over", tries=tries, elapsed=time.time() - start)
+                    return True
+            reason = "previous owner did not free the port in time (%s)" % err
+        self._web_warning = ("Web terminal unavailable: %s. Commands still run in "
+                             "this session's own shell." % reason)
+        logger.warning(self._web_warning)
+        return False
+
+    def _release(self):
+        """Another copy asked for the port: hand over the web terminal only.
+
+        The shell keeps running in the background (a running command finishes
+        normally, and folder, variables and screen history are kept), so the
+        next tool call here takes the port back and the tab shows this shell
+        exactly as it was.
+        """
+        with self._own_lock:
+            self.web_server.notify_handover()
+            self.web_server.stop()
+            self.state.clear_output_queue()
+            log_event("handed_over")
+            logger.info("Handed the web terminal over to another session "
+                        "(shell kept running)")
 
     def _setup(self):
         """Register the two MCP handlers. Declarations and behavior are kept apart:
@@ -123,6 +218,11 @@ class PowerShellTerminalMCP:
             """Route one invocation to _dispatch, converting any exception into an
             error payload so a failed tool never breaks the protocol session."""
             try:
+                if not self._project_checked:
+                    await self._fetch_project_dir()
+                if not self.web_server.owner_label:
+                    self.web_server.owner_label = self._client_label()
+                    eventlog.set_client(self.web_server.owner_label)
                 return await self._dispatch(name, arguments or {})
             except Exception as e:
                 logger.error("tool %s failed: %s", name, e, exc_info=True)
@@ -140,13 +240,30 @@ class PowerShellTerminalMCP:
         output is returned filtered by default, with the full text retrievable by
         command_id.
         """
-        self._ensure_started()
-
-        # Auto-open the web terminal if no browser tab is currently watching.
-        if name != "open_terminal" and not self.web_server.has_connected_clients():
-            await self.web_server.open_terminal()
-
         loop = asyncio.get_event_loop()
+
+        # Only tools that use the shell claim the terminal. Read-only tools
+        # (status, history, script list) must not pull the web terminal away
+        # from the chat the user is watching.
+        took_over = False
+        if name in SHELL_TOOLS:
+            took_over = await loop.run_in_executor(None, self._ensure_owner)
+            log_event("tool", name=name, took_over=took_over,
+                      owner=self.web_server.is_running(),
+                      tabs=self.web_server.has_connected_clients())
+
+        # Auto-open the web terminal if no browser tab is watching. After a
+        # take-over, first give the previous owner's tabs a moment to reconnect
+        # to us, so an existing tab is reused instead of a new one opening.
+        if (name in SHELL_TOOLS and name != "open_terminal"
+                and self.web_server.is_running()
+                and not self.web_server.has_connected_clients()):
+            if not took_over:
+                await self.web_server.open_terminal(
+                    reason="auto-open, not a take-over, no tab connected")
+            elif not await self.web_server.wait_for_client(6.0):
+                await self.web_server.open_terminal(
+                    reason="auto-open, no tab reconnected after take-over")
 
         if name == "execute_command":
             cmd = args["command"]
@@ -166,6 +283,7 @@ class PowerShellTerminalMCP:
                     "exit_code": result.get("exit_code"),
                     "output": result.get("output", ""),
                     "tail": result.get("tail", ""),
+                    **self._warning_field(),
                 }, ensure_ascii=False))
             timeout = float(args.get("timeout", 60))
             result = await loop.run_in_executor(None, lambda: self.state.run_command(cmd, timeout))
@@ -177,6 +295,7 @@ class PowerShellTerminalMCP:
                 "exit_code": result["exit_code"],
                 "success": result["success"],
                 "output": result.get("filtered") or result.get("output", ""),
+                **self._warning_field(),
             }, ensure_ascii=False))
 
         if name == "get_command_output":
@@ -224,10 +343,11 @@ class PowerShellTerminalMCP:
             return _txt(json.dumps({"status": "interrupt_sent"}))
 
         if name == "get_terminal_status":
-            url = "http://%s:%s" % (self.config.server.host, self.config.server.port)
             return _txt(json.dumps({
                 "alive": self.state.is_alive(),
-                "web_url": url,
+                "web_url": self.web_server.url,
+                "web_owner": self.web_server.is_running(),
+                **self._warning_field(),
             }))
 
         if name == "restart_session":
@@ -274,11 +394,117 @@ class PowerShellTerminalMCP:
             }, ensure_ascii=False))
 
         if name == "open_terminal":
-            await self.web_server.open_terminal()
-            url = "http://%s:%s" % (self.config.server.host, self.config.server.port)
-            return _txt(json.dumps({"opened": True, "url": url}))
+            if not self.web_server.is_running():
+                return _txt(json.dumps({
+                    "status": "unavailable", "url": self.web_server.url,
+                    "message": "The web terminal could not be shown (see web_warning). "
+                               "Commands still run. Do not open the URL yourself.",
+                    **self._warning_field()}))
+            # Reuse an open tab, but only one the user can see: a hidden tab
+            # (background tab, minimized window, a browser pane nobody looks
+            # at) would leave the user with no terminal. Right after a
+            # take-over the previous owner's tab is still reconnecting (it
+            # pauses ~1.5 s to show its notice), so give it a moment first.
+            if bool(args.get("reopen", False)):
+                # User lost the tab among others: close every open terminal
+                # tab (open_terminal tells them to step aside) and open one
+                # fresh tab, which the browser brings to the front.
+                connected, _ = self.web_server.client_counts()
+                await self.web_server.open_terminal(reason="reopen requested")
+                return _txt(json.dumps({
+                    "status": "shown", "tab": "reopened", "url": self.web_server.url,
+                    "message": "Closed %d open terminal tab(s) and opened a fresh one "
+                               "in front. Done." % connected}))
+            if took_over and not self.web_server.has_connected_clients():
+                await self.web_server.wait_for_client(6.0)
+            if self.web_server.has_connected_clients():
+                await self.web_server.wait_for_visible(1.0)
+            connected, visible = self.web_server.client_counts()
+            log_event("open_terminal_check", connected=connected, visible=visible)
+            if visible:
+                who = self.web_server.owner_label or "Claude"
+                await self.web_server.notice("Terminal requested by %s" % who)
+                # Worded as a plain success: a reply like "opened: false" made
+                # Claude think the tool failed and open the URL itself (extra tab).
+                return _txt(json.dumps({
+                    "status": "shown", "tab": "existing", "url": self.web_server.url,
+                    "message": "The web terminal is already open in the user's browser; "
+                               "that tab was reused and its header flashed. Done. "
+                               "Do not open the URL yourself."}))
+            if connected:
+                reason = "open_terminal, %d tab(s) connected but none visible" % connected
+                message = ("Opened the web terminal in a new browser tab (the "
+                           "existing tab was not visible). Done.")
+            else:
+                reason = "open_terminal, no tab connected"
+                message = "Opened the web terminal in a new browser tab. Done."
+            await self.web_server.open_terminal(reason=reason)
+            return _txt(json.dumps({
+                "status": "shown", "tab": "new", "url": self.web_server.url,
+                "message": message}))
 
         raise ValueError("Unknown tool: %s" % name)
+
+    async def _fetch_project_dir(self):
+        """Ask the client for its project folder (MCP 'roots'), once.
+
+        Used to open the shell in the project and to name it in the tab title.
+        Skipped for the Desktop chat (no project; one shared copy for all chats)
+        and for clients without roots support. Never fails a tool call: any
+        problem or a slow answer (> 2 s) just leaves the default behaviour."""
+        self._project_checked = True
+        try:
+            session = self.server.request_context.session
+            params = session.client_params
+            name = ((params.clientInfo.name if params else "") or "").lower()
+            if name.startswith("claude-ai"):
+                return
+            if not (params and params.capabilities and params.capabilities.roots):
+                logger.info("client %r does not offer roots; using default start folder", name)
+                return
+            result = await asyncio.wait_for(session.list_roots(), timeout=2.0)
+            for root in result.roots:
+                path = _file_uri_to_path(str(root.uri))
+                if path and os.path.isdir(path):
+                    self._project_dir = path
+                    logger.info("project folder from client roots: %s", path)
+                    return
+            logger.info("client roots had no usable folder: %s",
+                        [str(r.uri) for r in result.roots])
+        except Exception as e:
+            logger.info("could not get client roots (%s); using default start folder", e)
+
+    def _client_label(self):
+        """Who this copy serves, for the web terminal's tab title: the MCP
+        client's name (sent at connect), plus the project folder for Claude Code
+        so two Code sessions can be told apart."""
+        try:
+            info = self.server.request_context.session.client_params.clientInfo
+            raw = (info.name or "").strip()
+        except Exception:
+            return ""
+        key = raw.lower()
+        if key.endswith("-powershell-terminal"):
+            key = key[:-len("-powershell-terminal")]
+            raw = raw[:-len("-powershell-terminal")]
+        pretty = CLIENT_NAMES.get(key, raw)
+        # Only the CLI starts in the project folder; the Desktop app starts its
+        # servers in C:\Windows\System32, so a folder there would be meaningless.
+        if key in ("claude-code", "local-agent-mode"):
+            if self._project_dir:
+                folder = os.path.basename(self._project_dir.rstrip("\\/"))
+            elif key == "claude-code":
+                folder = os.path.basename(os.getcwd().rstrip("\\/"))
+            else:
+                folder = ""
+            if folder:
+                pretty = "%s · %s" % (pretty, folder)
+        logger.info("MCP client: %r -> label %r", raw, pretty)
+        return pretty
+
+    def _warning_field(self):
+        """{'web_warning': ...} when the web terminal is unavailable, else {}."""
+        return {"web_warning": self._web_warning} if self._web_warning else {}
 
     async def run(self):
         """Serve MCP over stdio until the client disconnects, then shut the terminal
@@ -291,7 +517,11 @@ class PowerShellTerminalMCP:
                 await self.server.run(read_stream, write_stream,
                                       self.server.create_initialization_options())
         finally:
+            log_event("shutdown")
             try:
+                # Tabs close themselves on this notice instead of waiting to
+                # reconnect to a server that is gone.
+                self.web_server.notify_shutdown()
                 self.web_server.stop()
             except Exception:
                 pass

@@ -70,18 +70,23 @@ class PwshSession(InteractiveMixin):
         self._scan_pos = 0
         self._interactive_start = 0     # slice pointer for the interactive primitive
         self._init_script = None
+        self.start_dir = None           # remembered so restart() reopens there
 
     # --- lifecycle ----------------------------------------------------------
 
-    def start(self, settle_timeout=SETTLE_TIMEOUT):
+    def start(self, settle_timeout=SETTLE_TIMEOUT, start_dir=None):
         """Spawn the session, set encoding + prompt override, wait for first token.
 
+        start_dir: optional folder to open in (kept for later restarts).
         Returns True if the session settled (prompt token detected).
         """
+        if start_dir:
+            self.start_dir = start_dir
         self.token = CompletionToken()
         shell = pwsh_launch.find_shell(self._shell_pref)
         self.shell_cmd = pwsh_launch.spawn_command(shell)
-        self.proc = pwsh_launch.spawn(self.shell_cmd, self.dimensions)
+        self.proc = pwsh_launch.spawn(self.shell_cmd, self.dimensions,
+                                      start_dir=self.start_dir)
 
         self._buf = ""
         self._scan_pos = 0
@@ -94,6 +99,12 @@ class PwshSession(InteractiveMixin):
         pwsh_io.write_line(self.proc, ". '" + self._init_script + "'")
 
         found, _, _ = self.wait_token(settle_timeout)
+        # The script is only needed at startup. Once the prompt token shows,
+        # PowerShell has fully read it, so delete it now; a killed server then
+        # leaves nothing in Temp. If the shell has not settled yet it may still
+        # need the file, so close() removes it later instead.
+        if found:
+            self._cleanup_init_script()
         if not found:
             logger.warning("session did not settle within %ss", settle_timeout)
         return found

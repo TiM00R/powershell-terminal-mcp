@@ -86,3 +86,6 @@ data/*.py
 
 
 src/config.yaml
+
+# Personal Claude Code settings (per machine)
+.claude/settings.local.json

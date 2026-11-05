@@ -96,8 +96,11 @@ class SharedTerminalState(StateHistoryMixin):
 
     # --- session lifecycle --------------------------------------------------
 
-    def start_session(self) -> bool:
+    def start_session(self, start_dir=None) -> bool:
         """Bring the PowerShell session up and attach it to a conversation.
+
+        start_dir: optional folder for the shell to open in (the client's
+        project folder); None keeps the default (POWERSHELL_TERMINAL_HOME / home).
 
         Also the point where history housekeeping happens: an existing active
         conversation is adopted (so a server restart continues the same thread
@@ -110,7 +113,7 @@ class SharedTerminalState(StateHistoryMixin):
         # The init script clears the screen (wiping the dot-source echo) and prints
         # the banner through ConPTY, so the web terminal opens clean with the first
         # prompt correctly positioned below the banner. No queue surgery needed.
-        ok = self.session_output.start()
+        ok = self.session_output.start(start_dir=start_dir)
         if ok and self.database and self._active_conversation_id is None:
             try:
                 existing = self.database.get_active_conversation()
@@ -147,9 +150,21 @@ class SharedTerminalState(StateHistoryMixin):
     # --- output plumbing (web UI) -------------------------------------------
 
     def _enqueue_output(self, chunk: str):
-        """on_broadcast sink: queue raw chunks for the web broadcast loop."""
+        """on_broadcast sink: queue raw chunks for the web broadcast loop.
+
+        Skipped while this process is not serving the web terminal (e.g. after
+        handing it to another session): nothing would drain the queue, and the
+        shell's own buffer already feeds the replay when a tab reconnects."""
+        if not self.web_server_running:
+            return
         with self.output_lock:
             self.output_queue.append(chunk)
+
+    def clear_output_queue(self):
+        """Drop queued output, e.g. after handing the terminal to another
+        session, so stale chunks from the closed shell never reach a tab."""
+        with self.output_lock:
+            self.output_queue.clear()
 
     def get_output(self) -> str:
         """Drain queued output for the web UI (polled by the broadcast loop).

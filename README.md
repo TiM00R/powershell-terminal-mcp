@@ -29,14 +29,16 @@ And Claude does it — executing commands in your real PowerShell session, analy
 ### Core Capabilities
 
 - **🖥️ Real PowerShell Session** — Persistent `pwsh` (PS7) or PS5.1 session via ConPTY; state carries across commands (working directory, variables, activated venv)
-- **🌐 Shared Human + AI Terminal** — NiceGUI + xterm.js web terminal at `http://localhost:8090`; type your own commands alongside Claude's
+- **🌐 Shared Human + AI Terminal** — xterm.js web terminal at `http://localhost:8090`; type your own commands alongside Claude's
 - **🔄 Multi-Terminal Sync** — Open multiple browser tabs, all perfectly synchronized
+- **🔀 Multiple Claude Sessions** — Desktop chats and Claude Code sessions each keep their own shell; the web terminal shows whichever one used it last, and switching back restores that shell exactly as it was (screen, folder, variables)
+- **📁 Opens in Your Project** — Claude Code sessions start the shell in their project folder; the tab title shows who owns the terminal (e.g. `Claude Code (Desktop app) · myproject`)
 - **🪟 No Popup Windows** — Native console executables (`git`, `python`, `ipconfig`, full paths) run inside ConPTY without spawning new windows
 - **✂️ Dual-Stream Output** — You see full output in the browser; Claude receives a token-reduced summary
 - **✅ Reliable Completion Detection** — Exit codes and command completion detected via invisible prompt token in OSC escape sequences — no fragile regex matching
 - **📝 Multi-Line Commands** — Send readable multi-line blocks (functions, loops, here-strings, piped chains); they execute as a single unit and render as a proper `>>` continuation block in the terminal, with variables persisting across the session
 - **⌨️ Interactive Programs** — REPLs, installers, and prompts (`python -i`, `node`, `ftp`, `Read-Host`) work end-to-end: Claude drives them turn-by-turn via a state machine (`AWAITING_INPUT` / `IDLE` / `RUNNING` / `EXITED`) with `send_input`, `poll`, and Ctrl+C. Interactive programs you type yourself in the web terminal work too.
-- **🚀 Auto-Open Terminal** — The web terminal opens automatically on any command when no browser tab is connected; minimized tabs stay connected and are left alone
+- **🚀 Auto-Open Terminal** — The web terminal opens automatically on any command when no browser tab is connected; minimized tabs stay connected and are left alone, and open tabs are reused when another session takes over
 - **🔁 Reconnect Replay** — Reopen or refresh the web terminal and the current screen is restored **in color**, instead of a blank tab
 - **📚 Script Library** — Save and reuse named `.ps1` scripts; full output persisted on script runs
 - **🗄️ Command History** — Commands grouped into conversations and logged to SQLite with selective output persistence
@@ -77,6 +79,20 @@ Configured under `server:` in `config.yaml`:
 
 Full replay is faithful because it re-feeds the exact byte stream the terminal already processed. A very long/noisy session makes reconnect parse more (seconds at most); switch to a bounded `N` if that ever matters.
 
+### Multiple Claude Sessions (Take-Over)
+
+Every Claude client runs its own copy of this server: the Desktop app has one shared by all its chats, and each Claude Code session (CLI or the Desktop app's Code tab) has its own. Each copy has its **own PowerShell**, but there is only one web terminal port, so the rule is **latest user wins**:
+
+- When a session runs a command and another copy owns the port, it asks that copy to hand over, then takes the port. Open tabs show *"Terminal taken over by another Claude session, reconnecting…"* for a moment and switch to the new session's shell — no new tab opens.
+- The previous owner **keeps its shell running in the background**. A command it was running finishes normally, and when you use that chat again it takes the terminal back with its screen, folder, and variables intact.
+- Only tools that use the shell (`execute_command`, `send_input`, `poll`, `send_interrupt`, `restart_session`, `run_script`, `open_terminal`) take the terminal over. Read-only tools (status, history, script list) never pull it away from the chat you are watching.
+- The tab title and header show the current owner: `Claude Desktop`, `Claude Code · <project>` (CLI), or `Claude Code (Desktop app) · <project>`.
+- One tab is reused throughout: asking to open the terminal again does not add tabs, as long as that tab is visible. If it is hidden (a background tab, minimized window, or a browser pane you are not looking at), a new tab opens and the hidden one is told to close. When a Claude session ends the tab closes itself; if the server is killed, it closes after 5 seconds without a reconnect. (If your browser refuses to let a page close its tab, the tab says the session ended instead.)
+
+**Start folder.** Claude Code sessions report their project folder (MCP *roots*), and a new shell opens there. The Desktop chat has no project and opens in `POWERSHELL_TERMINAL_HOME`, or your home folder if that is unset. A shell that is already running keeps its current folder.
+
+**How the hand-over is protected.** The owner writes `%LOCALAPPDATA%\powershell-terminal\owner-<port>.json` (process id + random token). A hand-over request must carry that token in a custom header, so only a local process that can read the file can trigger it — a web page in your browser cannot. If the port is held by an unrelated program, commands still run, and tool results include a `web_warning` explaining why the web terminal is unavailable.
+
 ### The Dual-Stream Architecture
 
 ```
@@ -107,6 +123,7 @@ PowerShell Terminal solves this completely:
 - A **PE header check** distinguishes console apps (CUI) from GUI apps — GUI apps like `notepad` and `code` open normally without blocking
 - Execution is handled via `System.Diagnostics.Process` with `CreateNoWindow=true` and redirected I/O, so output flows through ConPTY instead of a new window
 - Works for **short names** (`git`, `python`), **full paths** (`D:\tools\ffmpeg.exe`), and **any exe not known in advance**
+- The program starts in the shell's **current folder**, so `cd D:\repo; git status` works however the server itself was launched
 
 ### Multi-Line Commands
 
@@ -180,7 +197,7 @@ Add:
 }
 ```
 
-`POWERSHELL_TERMINAL_HOME` (optional) sets the working root: the PowerShell session starts there, and your editable `config.yaml` lives there (copied from the packaged default on first run; upgrades never overwrite it). If unset, the config is placed in `%USERPROFILE%\.powershell-terminal\` and the session starts in `%USERPROFILE%`.
+`POWERSHELL_TERMINAL_HOME` (optional) sets the working root: your editable `config.yaml` lives there (copied from the packaged default on first run; upgrades never overwrite it), and sessions without a project folder start there. If unset, the config is placed in `%USERPROFILE%\.powershell-terminal\` and those sessions start in `%USERPROFILE%`. Claude Code sessions start in their own project folder instead (see [Multiple Claude Sessions](#multiple-claude-sessions-take-over)).
 
 ---
 
@@ -223,7 +240,9 @@ Add:
 }
 ```
 
-When running from a source checkout, `config.yaml` at the repo root is used directly; `POWERSHELL_TERMINAL_HOME` still sets the session start directory.
+When running from a source checkout, `config.yaml` at the repo root is used directly; `POWERSHELL_TERMINAL_HOME` still sets the start folder for sessions without a project folder.
+
+The same entry can be registered for Claude Code (user scope, so every Code session can use it) with `claude mcp add --scope user powershell-terminal -- D:\powershell_terminal\.venv\Scripts\python.exe D:\powershell_terminal\src\mcp_server.py`.
 
 ---
 
@@ -316,13 +335,14 @@ Claude  <--stdio JSON-RPC-->  mcp_server.py
                   (ConPTY via    (full human    (AI token-          (conversations,
                    pywinpty)      scrollback)     reduced view)       commands, scripts)
                                     |
-                           NiceGUI + xterm.js web terminal (shared, multi-tab)
+                    Starlette/uvicorn + xterm.js web terminal (shared, multi-tab)
 ```
 
 - A single `pwsh` process runs inside a ConPTY (`pywinpty`). A background thread reads its output into a circular buffer.
 - The session's prompt is overridden (in the MCP session only) to emit a unique completion token + exit status inside invisible OSC escape sequences. The browser swallows them; the server detects them in the raw stream.
 - An output start-marker (emitted via a PSReadLine Enter handler, also invisible) lets the server separate a command's real output from the terminal's echo of the typed command.
 - Human keystrokes from the browser are passed through raw and are not tracked by the AI's completion detection, so the two streams never collide.
+- Each Claude client runs its own copy of the server with its own shell; only the copy that owns the port serves the web terminal, and ownership moves to whichever copy used the shell last (`web/ownership.py`).
 
 ### Project Structure
 
@@ -343,8 +363,13 @@ powershell_terminal/
 │   │   ├── pwsh_session.py         # Session lifecycle, run_command, send_input
 │   │   ├── pwsh_interactive.py     # Interactive-input state machine (mixin)
 │   │   └── session_output.py       # Dual-stream wrapper (raw + filtered)
+│   ├── static/                     # terminal.js, terminal.css, favicon, xterm.js vendor files
 │   ├── web/
-│   │   └── web_terminal.py         # NiceGUI + xterm.js web terminal
+│   │   ├── web_terminal.py         # Web server (Starlette/uvicorn), start/stop, release endpoint
+│   │   ├── web_terminal_ui.py      # Terminal page HTML
+│   │   ├── web_terminal_websocket.py  # Tab connections, broadcast, hand-over notice
+│   │   ├── ownership.py            # Which copy owns the port; hand-over requests
+│   │   └── eventlog.py             # Optional diagnostic event log (server.event_log)
 │   ├── completion_token.py         # Prompt token and OSC escape injection
 │   ├── db.py                       # SQLite database layer
 │   ├── mcp_server.py               # MCP server entry point (all tools)
@@ -360,7 +385,7 @@ powershell_terminal/
 - **Python 3.10+** — Core language
 - **MCP Protocol** — Claude integration (stdio JSON-RPC)
 - **pywinpty** — ConPTY pseudo-terminal on Windows
-- **NiceGUI + WebSockets** — Web terminal with multi-tab sync
+- **Starlette + uvicorn + WebSockets** — Web terminal with multi-tab sync (restartable in-process, which the session take-over needs)
 - **SQLite** — Command history and script storage
 - **xterm.js** — Browser terminal renderer
 
@@ -377,9 +402,9 @@ powershell_terminal/
 | `send_input(text, idle_ms?, max_s?, expect?)` | Send a line to a running/interactive program, then wait; returns `{state, output, exit_code, tail}`. |
 | `poll(idle_ms?, max_s?, expect?)` | Accumulate more output from a running/interactive command **without** sending input. |
 | `send_interrupt()` | Send Ctrl+C to the running command. |
-| `get_terminal_status()` | Session alive? Web terminal URL. |
-| `restart_session()` | Kill and respawn the PowerShell session (clears all state). |
-| `open_terminal()` | Open (or re-open) the web terminal in the browser. Also happens automatically on any command when no tab is connected. |
+| `get_terminal_status()` | Session alive? Web terminal URL, whether this session owns it (`web_owner`), and `web_warning` if it is unavailable. Read-only: never takes the terminal over. |
+| `restart_session()` | Kill and respawn the PowerShell session (clears all state; reopens in the project folder if known). |
+| `open_terminal(reopen?)` | Show the web terminal. Reuses an open tab you can see (its header briefly shows "Terminal requested by …"); otherwise opens a new tab. A tab that is hidden (background tab, minimized window, hidden browser pane) is not reused: it is told to close and a new one opens. `reopen: true` (only when you ask, e.g. "reopen the terminal" or "I can't find the terminal tab") closes the open terminal tab(s) and opens one fresh tab in front. Also happens automatically on any command when no tab is connected. |
 
 ### Scripts
 
@@ -414,6 +439,7 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 - `server.host` / `server.port` — Web terminal address (default `localhost:8090`)
 - `server.replay_lines` — On-connect screen replay: `-1` full buffer (default), `0` prompt only, `N` last N lines
 - `server.replay_max_bytes` — Byte cap for the `N > 0` replay mode
+- `server.event_log` — Diagnostic log of take-overs and tab events to `%LOCALAPPDATA%\powershell-terminal\web.log` (~2 MB cap); off by default, turn on to troubleshoot extra or missing tabs
 - `interactive.idle_ms` / `interactive.max_s` / `interactive.poll_ms` — Interactive-command tuning (defaults `600` / `30` / `30`)
 - Output filter thresholds (keyed by command type: `install`, `system_info`, `network`, `file_listing`, `file_viewing`, `log_search`, `generic`) and PowerShell error patterns
 - `database.path` — Override the SQLite location (default `data\commands.db`, relative to the install); set an absolute path to pin it across installs / working directories
@@ -424,6 +450,7 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 ## 🛡️ Security Considerations
 
 - Web terminal bound to `localhost` only — not exposed to the network
+- Session hand-over requires a per-owner secret token sent in a custom header; browser pages cannot trigger it
 - Full command audit trail in SQLite
 - The init script runs in the MCP's own session only — **your `$PROFILE`, normal PowerShell, and prompt are never modified**
 - Claude runs commands in your local user context with your normal permissions
@@ -435,7 +462,7 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 1. **Windows only** — ConPTY is a Windows API; Linux/Mac not supported
 2. **Interactive TUI apps not supported** — Commands that take over the terminal (e.g. `vim`, `htop`) will hang; use `-NonInteractive` alternatives
 3. **`ssh` password auth via Claude** — Windows OpenSSH reads its password from the console (CONIN$), not stdin, so `ssh` doesn't prompt through the interactive path (silent exit 255). Use key auth / `BatchMode`, a scripted client (`ftp -s:`), or type the password yourself in the web terminal. stdin-based tools (`python -i`, `node`, `ftp`, `Read-Host`) work.
-4. **Single session** — One shared PowerShell session; no per-command isolation
+4. **One shell per Claude client** — All chats in the Desktop app share one shell; each Claude Code session has its own. Each client that has used the terminal keeps an idle `pwsh` (roughly 60–100 MB) until that client closes. Two sessions used at the same time keep taking the web terminal from each other (their shells are unaffected)
 5. **Incomplete multi-line commands hang** — A multi-line command with unbalanced braces, parentheses, or quotes stays at the `>>` continuation prompt until it times out (returned as `status: "running"`) and must be cleared with `send_interrupt()`. This is inherent to PowerShell's continuation model, not specific to this tool — send syntactically complete blocks.
 
 ---
@@ -448,12 +475,26 @@ Run the headless test harnesses without Claude Desktop:
 .\.venv\Scripts\python.exe scripts\test_pwsh_session.py     # session: completion, exit codes, interactive, Ctrl+C, restart
 .\.venv\Scripts\python.exe scripts\test_session_output.py   # buffer + dual-stream filter
 .\.venv\Scripts\python.exe scripts\test_mcp_dispatch.py     # all MCP tools via direct dispatch
-python run_web.py                                            # launch web terminal standalone
+.\.venv\Scripts\python.exe run_web.py 8095                  # web terminal standalone on a spare port (open the URL yourself)
 ```
 
 ---
 
 ## 📜 Version History
+
+### v0.4.0 (November 2026) — Multiple Claude sessions, project start folder, web server without NiceGUI
+
+- ✅ **Multiple Claude sessions share the web terminal** — previously a second Claude client (another Claude Code session, or Desktop + Code) ran commands in its own shell while the web page kept showing the first client's shell, and it opened a new browser tab on almost every command. Now the session that used the shell last owns the web terminal: the previous owner hands over on request, open tabs show a short notice and reconnect, and no extra tabs open.
+- ✅ **Switching back restores the session** — the previous owner keeps its shell running in the background, so screen history, folder, variables, and any running command survive a take-over.
+- ✅ **Read-only tools don't take over** — status, history, and script listing never pull the web terminal away from another chat.
+- ✅ **Project start folder** — Claude Code sessions (CLI and the Desktop app's Code tab) open the shell in their project folder, read via MCP roots; Desktop chats are unchanged.
+- ✅ **Owner in the tab title** — e.g. `PowerShell Terminal — Claude Code (Desktop app) · myproject`, updated live on take-over; new `>_` tab icon.
+- ✅ **Fix: native programs ignored `cd`** — `git`, `python`, `npm`, etc. run by Claude started in the server's launch folder (e.g. `C:\Windows\System32`) instead of the shell's current folder; they now follow `cd`.
+- ✅ **Fix: web server bind failure went unnoticed** — when the port was taken, the server thread died silently while the app still believed it was running.
+- ✅ **Web server rewritten on Starlette + uvicorn** — NiceGUI is no longer a dependency (smaller install, one connection per tab, server can stop and restart in-process). Same page, same look.
+- ✅ **One terminal tab, reused** — `open_terminal` always reuses the open tab and opens one only when none is connected; previously, switching between two sessions stacked up tabs. Its reply now clearly says the existing tab was reused, so Claude no longer opens the URL itself and creates a duplicate tab. Only a visible tab is reused; `reopen: true` replaces a tab you lost among others.
+- ✅ **Optional diagnostic event log** — `server.event_log` (off by default) records take-overs and tab events to `web.log`, to troubleshoot extra or missing tabs.
+- ✅ **Tab closes when the session ends** — on a normal Claude quit the tab closes itself right away; if the server is killed it retries for 5 s, then closes. Scrollbar is now always visible in Edge/Chrome.
 
 ### v0.3.1 (July 2026) -- Config file now ships with pip installs
 
@@ -528,6 +569,6 @@ MIT
 
 ---
 
-**Version:** 0.3.1
-**Last Updated:** July 2026
+**Version:** 0.4.0
+**Last Updated:** November 2026
 **Maintainer:** Tim

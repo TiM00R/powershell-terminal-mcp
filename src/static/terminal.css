@@ -7,21 +7,53 @@ html, body {
     height: 100%;
 }
 
-.nicegui-content {
-    padding: 0 !important;
-    margin: 0 !important;
-    width: 100% !important;
-    max-width: 100% !important;
+body {
+    background: #1e1e1e;
+    font-family: Roboto, "Segoe UI", -apple-system, Helvetica, Arial, sans-serif;
 }
 
-.q-page-container {
-    padding: 0 !important;
-    margin: 0 !important;
+/* Header bar (same look and height as the old NiceGUI header) */
+.pt-header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    box-sizing: border-box;
+    background: #5898d4;
+    color: #ffffff;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
 }
 
-.q-page {
-    padding: 0 !important;
-    margin: 0 !important;
+.pt-title {
+    font-size: 1.25rem;
+    font-weight: 500;
+    letter-spacing: 0.0125em;
+}
+
+/* Owning Claude session, right side of the header */
+.pt-owner {
+    margin-left: auto;
+    padding-left: 16px;
+    font-size: 0.95rem;
+    opacity: 0.9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-radius: 4px;
+    padding-right: 8px;
+    transition: background-color 0.4s ease, color 0.4s ease;
+}
+
+/* Brief highlight when Claude asks for an already-open terminal */
+.pt-owner.flash {
+    background: #ffffff;
+    color: #1e4f8a;
+    opacity: 1;
+    font-weight: 500;
 }
 
 /* Terminal container */
@@ -48,8 +80,16 @@ html, body {
 .xterm-viewport {
     overflow-y: scroll !important;
     overflow-x: hidden !important;
-    scrollbar-width: thin;
-    scrollbar-color: #555 #1e1e1e;
+}
+
+/* Firefox only. In Edge/Chrome, setting the standard scrollbar-width/-color
+   properties disables the ::-webkit-scrollbar styles below and gives a thin
+   auto-hiding overlay bar (Windows 11), so they must not apply there. */
+@supports not selector(::-webkit-scrollbar) {
+    .xterm-viewport {
+        scrollbar-width: thin;
+        scrollbar-color: #666 #1e1e1e;
+    }
 }
 
 .xterm-viewport::-webkit-scrollbar {
@@ -61,8 +101,9 @@ html, body {
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {
-    background: #555;
+    background: #666;
     border-radius: 6px;
+    min-height: 40px;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {

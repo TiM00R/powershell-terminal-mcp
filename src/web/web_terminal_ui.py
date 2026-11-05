@@ -1,50 +1,50 @@
 """
-Web Terminal UI Page Generation
-NiceGUI-based terminal interface with xterm.js
+Web Terminal page - one static HTML page hosting xterm.js.
 """
 
+import html
 import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+FRAGMENTS = Path(__file__).parent.parent / 'static' / 'fragments'
+BASE_TITLE = 'PowerShell Terminal'
 
-def create_terminal_page(ui, web_terminal_server):
-    """
-    Create the main terminal UI page
 
-    Args:
-        ui: NiceGUI ui module
-        web_terminal_server: WebTerminalServer instance
-    """
+def _read_fragment(name: str) -> str:
+    """Read an HTML fragment from static/fragments."""
+    return (FRAGMENTS / name).read_text(encoding='utf-8')
 
-    def _read_fragment(name: str) -> str:
-        """Read HTML fragment from static/fragments"""
-        # static is in src/static, go up one level from web/ directory
-        base = Path(__file__).parent.parent / 'static' / 'fragments'
-        return (base / name).read_text(encoding='utf-8')
 
-    @ui.page('/')
-    def index():
-        """Main page with xterm.js terminal"""
+def page_title(owner_label: str = "") -> str:
+    """Tab title; names the owning session when known."""
+    return "%s — %s" % (BASE_TITLE, owner_label) if owner_label else BASE_TITLE
 
-        # Header
-        with ui.header().classes('items-center justify-between'):
-            connection_label = ui.label(
-                'PowerShell Terminal (local)'
-            ).classes('text-h6')
 
-        # Load xterm.js libraries and CSS
-        ui.add_head_html(_read_fragment('head.html'))
+def render_index_html(owner_label: str = "") -> str:
+    """The terminal page: header, xterm.js assets, terminal container, terminal.js.
 
-        # Terminal container
-        ui.html(_read_fragment('terminal_container.html'), sanitize=False)
-
-        # Load WebSocket-enabled terminal.js
-        ui.run_javascript('''
-            const script1 = document.createElement('script');
-            script1.src = '/static/terminal.js';
-            document.body.appendChild(script1);
-        ''', timeout=1.0)
-
-        # Connection label is updated via WebSocket events - no polling timer needed
+    owner_label names the Claude session that owns the terminal; terminal.js
+    updates it live when ownership moves to another session."""
+    owner = html.escape(owner_label)
+    return (
+        '<!doctype html>\n'
+        '<html lang="en">\n'
+        '<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<title>' + html.escape(page_title(owner_label)) + '</title>\n'
+        '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">\n'
+        + _read_fragment('head.html') + '\n'
+        '</head>\n'
+        '<body>\n'
+        '<header class="pt-header">'
+        '<span class="pt-title">PowerShell Terminal (local)</span>'
+        '<span class="pt-owner" id="pt-owner">' + owner + '</span>'
+        '</header>\n'
+        + _read_fragment('terminal_container.html') + '\n'
+        '<script src="/static/terminal.js"></script>\n'
+        '</body>\n'
+        '</html>\n'
+    )

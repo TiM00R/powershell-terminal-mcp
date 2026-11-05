@@ -7,6 +7,16 @@ command handling, reconnect replay). For the released tool surface and configura
 reference, README.md is authoritative; the v0.3.0 changes (Windows/PS error patterns,
 get_command_history, database path + retention pruning, persistent active
 conversation, DB admin CLI, config/packaging cleanup) are listed in its changelog.
+
+v0.4.0 note: the web server is now Starlette + uvicorn instead of NiceGUI; several
+Claude sessions share the web terminal ("latest user wins" take-over via
+src/web/ownership.py, each session keeps its own shell); Claude Code sessions open
+in their project folder (MCP roots); one visible tab is reused (open_terminal
+reopen option for a lost tab); optional diagnostic event log (server.event_log).
+See README.md ("Multiple Claude Sessions (Take-Over)" and the v0.4.0 changelog).
+Sections below that mention NiceGUI, close_all or _ensure_started describe the
+v0.3 design.
+
 Project folder: D:\powershell_terminal
 Copied from: remote-terminal-mcp (SSH) at D:\RodsProj\remote_terminal
 Pristine original (recovery source): D:\RodsProj\remote_terminal

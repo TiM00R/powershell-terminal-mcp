@@ -11,7 +11,7 @@ pywinpty>=2.0.10
 pyyaml>=6.0
 
 # MCP (Model Context Protocol) for Claude integration
-mcp>=1.0.0
+mcp>=1.0.0,<2
 
 # ASGI framework used by the web terminal
 starlette>=0.27.0

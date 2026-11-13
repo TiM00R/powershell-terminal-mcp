@@ -19,6 +19,7 @@ from .web_terminal_websocket import WebSocketManager
 from .web_terminal_ui import render_index_html
 from . import ownership
 from .eventlog import log_event
+from .web_terminal_guard import check_ws
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,14 @@ class WebTerminalServer:
             return HTMLResponse(render_index_html(self.owner_label))
 
         async def websocket_endpoint(websocket):
+            ok, reason = check_ws(websocket.headers,
+                                  self.config.server.host, self.config.server.port)
+            if not ok:
+                log_event("ws_forbidden", reason=reason,
+                          origin=(websocket.headers.get("origin") or "")[:100],
+                          host=(websocket.headers.get("host") or "")[:100])
+                await websocket.close(code=1008)    # 1008 = policy violation
+                return
             await websocket.accept()
             # Tell the tab who owns the terminal now (a reconnecting tab may
             # have been showing another session).

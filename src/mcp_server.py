@@ -151,7 +151,15 @@ class PowerShellTerminalMCP:
             # then find a ready shell and switch once, instead of seeing a blank
             # screen followed by the new shell's own clear + banner.
             if not self._started:
-                self.state.start_session(start_dir=self._project_dir)
+                if not self.state.start_session(start_dir=self._project_dir):
+                    # Not ready in time: do not mark it started. Close the
+                    # half-started shell so the next tool call starts fresh,
+                    # and tell the AI why nothing ran.
+                    self.state.close_session()
+                    log_event("shell_start_failed")
+                    raise RuntimeError(
+                        "PowerShell did not become ready in time, so nothing was "
+                        "run. The next call will try to start it again.")
                 self._started = True
             took_over = False
             if not self.web_server.is_running():

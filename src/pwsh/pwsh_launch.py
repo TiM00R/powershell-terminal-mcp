@@ -21,7 +21,10 @@ READ_CHUNK = 4096
 # POWERSHELL_TERMINAL_HOME if set, else the user's home ($HOME / USERPROFILE).
 ENCODING_SETUP = (
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
-    "$OutputEncoding = [System.Text.Encoding]::UTF8\n"
+    # UTF-8 WITHOUT a BOM: this is what PowerShell writes into a program's stdin
+    # when you pipe text to it. [Encoding]::UTF8 would prefix every pipe with the
+    # 3 bytes EF BB BF, which programs read as junk at the start of the input.
+    "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
     "Set-ExecutionPolicy -Scope Process Bypass -Force\n"
     # Restore PATHEXT in case the MCP server inherited a stripped-down value (e.g. only .CPL).
     # Without .EXE in PATHEXT, bare command names like 'git' and 'ipconfig' are not resolved.
@@ -63,7 +66,9 @@ NATIVE_WRAPPERS = (
     "    if (-not $global:__mcp_ai_batch) {\n"
     "      $__b = (Get-Command $__exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source\n"
     "      if (-not $__b) { $__b = $__src }\n"
-    "      & $__b @args\n"
+    # Forward piped input when there is some; otherwise keep stdin on the
+    # console so interactive use (python REPL, prompts) still works.
+    "      if ($MyInvocation.ExpectingInput) { $input | & $__b @args } else { & $__b @args }\n"
     "      return\n"
     "    }\n"
     "    $__live = (Get-Command $__exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source\n"
@@ -74,14 +79,20 @@ NATIVE_WRAPPERS = (
     # Start in the shell's current folder (cd does not change the process folder).
     "    $psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath\n"
     "    $psi.RedirectStandardInput = $true\n"
+    "    $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
     "    $psi.RedirectStandardOutput = $true\n"
     "    $psi.RedirectStandardError = $true\n"
     "    foreach ($a in $args) { $psi.ArgumentList.Add($a) }\n"
     "    $proc = [System.Diagnostics.Process]::Start($psi)\n"
     "    if ($proc) {\n"
-    "      $proc.StandardInput.Close()\n"
+    # Start reading output BEFORE writing input (a chatty program could fill
+    # its output pipe and stall while we block on writing). Piped input is sent
+    # as text lines, like PowerShell itself does; with no pipe, stdin is just
+    # closed so a program waiting for input cannot hang the AI.
     "      $outTask = $proc.StandardOutput.ReadToEndAsync()\n"
     "      $errTask = $proc.StandardError.ReadToEndAsync()\n"
+    "      if ($MyInvocation.ExpectingInput) { foreach ($__line in ($input | Out-String -Stream)) { $proc.StandardInput.WriteLine($__line) } }\n"
+    "      $proc.StandardInput.Close()\n"
     "      $proc.WaitForExit()\n"
     "      [System.Threading.Tasks.Task]::WhenAll($outTask,$errTask) | Out-Null\n"
     "      if ($outTask.Result) { $outTask.Result.Split([char]10) | ForEach-Object { $_.TrimEnd([char]13) } }\n"
@@ -142,7 +153,7 @@ NATIVE_EXE_HOOK = (
     "        $funcName = $Name\n"
     "      }\n"
     "      $exeQ = $exe.Replace(\"'\", \"''\")\n"
-    "      $code = \"param(); `$psi = [System.Diagnostics.ProcessStartInfo]::new('$exeQ'); `$psi.UseShellExecute = `$false; `$psi.CreateNoWindow = `$true; `$psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath; `$psi.RedirectStandardInput = `$true; `$psi.RedirectStandardOutput = `$true; `$psi.RedirectStandardError = `$true; foreach (`$a in `$args) { `$psi.ArgumentList.Add(`$a) }; `$proc = [System.Diagnostics.Process]::Start(`$psi); if (`$proc) { `$proc.StandardInput.Close(); `$outTask = `$proc.StandardOutput.ReadToEndAsync(); `$errTask = `$proc.StandardError.ReadToEndAsync(); `$proc.WaitForExit(); [System.Threading.Tasks.Task]::WhenAll(`$outTask,`$errTask) | Out-Null; if (`$outTask.Result) { `$outTask.Result.Split([char]10) | ForEach-Object { `$_.TrimEnd([char]13) } }; if (`$errTask.Result) { [Console]::Error.Write(`$errTask.Result) }; `$global:LASTEXITCODE = `$proc.ExitCode }\"\n"
+    "      $code = \"param(); `$psi = [System.Diagnostics.ProcessStartInfo]::new('$exeQ'); `$psi.UseShellExecute = `$false; `$psi.CreateNoWindow = `$true; `$psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath; `$psi.RedirectStandardInput = `$true; `$psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new(`$false); `$psi.RedirectStandardOutput = `$true; `$psi.RedirectStandardError = `$true; foreach (`$a in `$args) { `$psi.ArgumentList.Add(`$a) }; `$proc = [System.Diagnostics.Process]::Start(`$psi); if (`$proc) { `$outTask = `$proc.StandardOutput.ReadToEndAsync(); `$errTask = `$proc.StandardError.ReadToEndAsync(); if (`$MyInvocation.ExpectingInput) { foreach (`$__line in (`$input | Out-String -Stream)) { `$proc.StandardInput.WriteLine(`$__line) } }; `$proc.StandardInput.Close();`$proc.WaitForExit(); [System.Threading.Tasks.Task]::WhenAll(`$outTask,`$errTask) | Out-Null; if (`$outTask.Result) { `$outTask.Result.Split([char]10) | ForEach-Object { `$_.TrimEnd([char]13) } }; if (`$errTask.Result) { [Console]::Error.Write(`$errTask.Result) }; `$global:LASTEXITCODE = `$proc.ExitCode }\"\n"
     "      $fn = [scriptblock]::Create($code)\n"
     "      New-Item -Force -Path Function: -Name $funcName -Value $fn | Out-Null\n"
     "      $fi = $ExecutionContext.InvokeCommand.GetCommand($funcName, 'Function')\n"

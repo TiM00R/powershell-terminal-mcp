@@ -79,6 +79,17 @@ def test_human_pipe_into_unwrapped_exe_has_no_bom():
     assert out == ["1:hello"]
 
 
+def test_python_utf8_mode_on():
+    out = ai_batch('python -c "import sys; print(sys.flags.utf8_mode)"')
+    assert out == ["1"]
+
+
+def test_emoji_pipe_round_trip():
+    # Read an emoji from the pipe and print it back to a pipe: no garbling, no crash.
+    out = ai_batch('"hi \U0001F600" | python -c "import sys; print(ascii(sys.stdin.read()))"')
+    assert out == ["'hi \\U0001f600\\n'"]
+
+
 # --- must keep working ---------------------------------------------------------
 
 def test_stdin_still_closed_without_pipe():

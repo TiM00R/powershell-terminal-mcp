@@ -25,6 +25,11 @@ ENCODING_SETUP = (
     # when you pipe text to it. [Encoding]::UTF8 would prefix every pipe with the
     # 3 bytes EF BB BF, which programs read as junk at the start of the input.
     "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+    # Python: use UTF-8 for pipes, redirected output and files (UTF-8 mode).
+    # Without it Python on Windows uses cp1252: non-English text is garbled and
+    # printing an emoji to a pipe crashes with UnicodeEncodeError. Respect the
+    # user's own setting if they already chose one.
+    "if (-not $env:PYTHONUTF8) { $env:PYTHONUTF8 = '1' }\n"
     "Set-ExecutionPolicy -Scope Process Bypass -Force\n"
     # Restore PATHEXT in case the MCP server inherited a stripped-down value (e.g. only .CPL).
     # Without .EXE in PATHEXT, bare command names like 'git' and 'ipconfig' are not resolved.

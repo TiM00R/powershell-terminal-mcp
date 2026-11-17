@@ -2,7 +2,7 @@
 test_session_output.py - smoke test for SessionOutput (buffer + filter wiring).
 Run after setup_venv.ps1:
 
-    .\.venv\Scripts\python.exe test_session_output.py
+    .\.venv\Scripts\python.exe scripts/test_session_output.py
 
 Plain ASCII. No curl.
 """

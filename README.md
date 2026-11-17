@@ -351,10 +351,11 @@ powershell_terminal/
 ├── config.yaml                     # Web port, filter thresholds, error patterns, DB retention
 ├── data/
 │   └── commands.db                 # SQLite: conversations, commands, scripts (source checkout only)
-├── scripts/                        # Headless test harnesses
+├── scripts/                        # Headless test harnesses (run by hand)
 │   ├── test_pwsh_session.py        # Session: completion, exit codes, interactive, Ctrl+C
 │   ├── test_session_output.py      # Buffer + dual-stream filter
 │   └── test_mcp_dispatch.py        # All MCP tools via direct dispatch
+├── tests/                          # Automated tests (pytest, or run each file directly)
 ├── src/
 │   ├── config/                     # Configuration loading
 │   ├── output/                     # Output filtering and buffering
@@ -362,10 +363,16 @@ powershell_terminal/
 │   │   ├── pwsh_launch.py          # Shell spawn, init script, native exe hook
 │   │   ├── pwsh_session.py         # Session lifecycle, run_command, send_input
 │   │   ├── pwsh_interactive.py     # Interactive-input state machine (mixin)
+│   │   ├── pwsh_reader.py          # Background thread reading shell output
+│   │   ├── pwsh_io.py              # Low-level writes into the terminal (keys, Ctrl+C)
+│   │   ├── output_clean.py         # Separates command output from the echoed command
+│   │   ├── proc_tree.py            # Finds/ends programs the shell started (force interrupt)
 │   │   └── session_output.py       # Dual-stream wrapper (raw + filtered)
 │   ├── static/                     # terminal.js, terminal.css, favicon, xterm.js vendor files
+│   ├── utils/                      # Text, output and formatting helpers
 │   ├── web/
 │   │   ├── web_terminal.py         # Web server (Starlette/uvicorn), start/stop, release endpoint
+│   │   ├── web_terminal_guard.py   # Rejects websocket connections from other sites
 │   │   ├── web_terminal_ui.py      # Terminal page HTML
 │   │   ├── web_terminal_websocket.py  # Tab connections, broadcast, hand-over notice
 │   │   ├── ownership.py            # Which copy owns the port; hand-over requests
@@ -373,8 +380,10 @@ powershell_terminal/
 │   ├── completion_token.py         # Prompt token and OSC escape injection
 │   ├── db.py                       # SQLite database layer
 │   ├── mcp_server.py               # MCP server entry point (all tools)
+│   ├── tool_schemas.py             # MCP tool definitions (names, parameters, descriptions)
 │   ├── shared_state.py             # Global session hub (session + execution path)
-│   └── state_history.py            # DB facade: logging, conversations, history, scripts
+│   ├── state_history.py            # DB facade: logging, conversations, history, scripts
+│   └── web_replay.py               # Screen replay sent to a newly opened tab
 ├── db_admin.py / db-admin.ps1      # DB maintenance CLI (list/show/prune/vacuum/delete)
 ├── setup_venv.ps1                  # One-command environment setup
 └── run_web.py                      # Launch web terminal standalone (no Claude)
@@ -475,7 +484,14 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 
 ## 🔍 Development
 
-Run the headless test harnesses without Claude Desktop:
+Automated tests (temporary folders and fakes only; your shell, ports and history are not touched):
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests                  # all tests (needs: pip install pytest)
+.\.venv\Scripts\python.exe tests\test_db_location.py        # or run any test file directly, no pytest needed
+```
+
+Headless harnesses that drive a real PowerShell session (run by hand, without Claude Desktop):
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\test_pwsh_session.py     # session: completion, exit codes, interactive, Ctrl+C, restart

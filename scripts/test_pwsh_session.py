@@ -3,7 +3,7 @@ test_pwsh_session.py - standalone smoke test for the PwshSession classes.
 Mirrors the spike probes but against the production modules. NOT a unit test;
 run it by hand after setup_venv.ps1:
 
-    .\.venv\Scripts\python.exe test_pwsh_session.py
+    .\.venv\Scripts\python.exe scripts/test_pwsh_session.py
 
 Plain ASCII. No curl.
 """

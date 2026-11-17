@@ -7,7 +7,7 @@ call) WITHOUT Claude Desktop, so we don't pay a restart per change. The only thi
 this does NOT cover is the stdio JSON-RPC transport itself (library code).
 
 Run after setup_venv.ps1:
-    .\.venv\Scripts\python.exe test_mcp_dispatch.py
+    .\.venv\Scripts\python.exe scripts/test_mcp_dispatch.py
 
 Plain ASCII. No curl.
 """

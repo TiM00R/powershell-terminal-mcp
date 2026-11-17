@@ -84,8 +84,9 @@ server:
   event_log: false
 
 # Local SQLite command store (history / emergency forensics).
-# path: null -> use <project_root>/data/commands.db (default, relative to install).
-#       set an ABSOLUTE path to pin the DB across pip installs / CWD changes.
+# path: null -> default: <project_root>/data/commands.db when running from source;
+#       an installed copy uses %POWERSHELL_TERMINAL_HOME% or ~/.powershell-terminal.
+#       set an ABSOLUTE path to pin the DB anywhere else.
 database:
   path: null
   # startup auto-prune: drop conversations (and their commands) whose last activity

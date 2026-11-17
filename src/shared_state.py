@@ -77,7 +77,14 @@ class SharedTerminalState(StateHistoryMixin):
             db_path = self.config.database.path
         except Exception:
             db_path = None
-        self.database = Database(path=db_path)
+        try:
+            self.database = Database(path=db_path)
+        except Exception:
+            # History is optional: every database use checks `if self.database`.
+            logger.exception("History database could not be opened (%s); "
+                             "continuing without command history",
+                             db_path or "default location")
+            self.database = None
         self._active_conversation_id = None
 
         filter_config = {

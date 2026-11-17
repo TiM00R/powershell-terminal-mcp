@@ -15,9 +15,13 @@ Conversations group commands; scripts hold saved .ps1. Old conversations are pru
 on startup per config database.retention_days. No buffer line-pointers, no servers,
 no machine_id, no rollback.
 
-DB location: config database.path, else <project_root>/data/commands.db
+DB location: config database.path, else <project_root>/data/commands.db when
+running from source, else POWERSHELL_TERMINAL_HOME or ~/.powershell-terminal
+(see default_db_path).
 """
 
+import os
+import shutil
 import time
 import sqlite3
 import threading
@@ -27,15 +31,33 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def default_db_path():
-    """Locate the DB relative to the install so the store follows the project
-    rather than the working directory (which is unpredictable for an MCP server
-    launched by Claude Desktop). Config database.path overrides this."""
+def default_db_path(project_root=None):
+    """Pick the DB location when config database.path is not set. Never the
+    working directory (unpredictable for an MCP server launched by Claude Desktop).
+
+    - Source checkout (config.yaml next to src/): <project_root>/data/commands.db
+    - Installed copy (pip/pipx; the package folder may be replaced on upgrade):
+      POWERSHELL_TERMINAL_HOME, else ~/.powershell-terminal. History left at the
+      old <project_root>/data/commands.db is copied over once, never overwriting.
+    """
     # Project root is one level above src/
-    project_root = Path(__file__).parent.parent
-    data_dir = project_root / "data"
-    data_dir.mkdir(exist_ok=True)
-    return str(data_dir / "commands.db")
+    root = Path(project_root) if project_root else Path(__file__).parent.parent
+    old = root / "data" / "commands.db"
+    if (root / "config.yaml").exists():
+        old.parent.mkdir(exist_ok=True)
+        return str(old)
+
+    home = os.environ.get("POWERSHELL_TERMINAL_HOME")
+    data_dir = Path(home) if home else Path.home() / ".powershell-terminal"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    new = data_dir / "commands.db"
+    if not new.exists() and old.exists():
+        try:
+            shutil.copy2(old, new)
+            logger.info("Copied command history from %s to %s", old, new)
+        except Exception:
+            logger.warning("Could not copy old history from %s", old, exc_info=True)
+    return str(new)
 
 
 SCHEMA = """

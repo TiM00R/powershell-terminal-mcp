@@ -8,7 +8,8 @@ Destructive commands (clean-stale, delete-ids, prune) DEFAULT TO A DRY RUN and o
 execute when you pass --yes, so you always see what will be removed first.
 
 DB path resolution: config.yaml database.path if set, else db.default_db_path()
-(<project_root>/data/commands.db). Override with --db PATH.
+(<project_root>/data/commands.db from source; POWERSHELL_TERMINAL_HOME or
+~/.powershell-terminal when installed). Override with --db PATH.
 
 Usage:
   python db_admin.py list

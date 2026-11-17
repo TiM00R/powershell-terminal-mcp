@@ -106,9 +106,9 @@ class ServerConfig:
 
 @dataclass
 class DatabaseConfig:
-    """Local SQLite store location. path=None -> <project_root>/data/commands.db
-    (computed in db.default_db_path). Set an absolute path to keep the DB stable
-    regardless of install location or working directory.
+    """Local SQLite store location. path=None -> db.default_db_path():
+    <project_root>/data/commands.db from source, POWERSHELL_TERMINAL_HOME or
+    ~/.powershell-terminal when installed. Set an absolute path to pin it.
     retention_days: startup auto-prune drops conversations (and their commands)
     whose last activity is older than this many days. 0 disables pruning. The
     active conversation is never pruned."""

@@ -350,7 +350,7 @@ Claude  <--stdio JSON-RPC-->  mcp_server.py
 powershell_terminal/
 ├── config.yaml                     # Web port, filter thresholds, error patterns, DB retention
 ├── data/
-│   └── commands.db                 # SQLite: conversations, commands, scripts
+│   └── commands.db                 # SQLite: conversations, commands, scripts (source checkout only)
 ├── scripts/                        # Headless test harnesses
 │   ├── test_pwsh_session.py        # Session: completion, exit codes, interactive, Ctrl+C
 │   ├── test_session_output.py      # Buffer + dual-stream filter
@@ -442,7 +442,7 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 - `server.event_log` — Diagnostic log of take-overs and tab events to `%LOCALAPPDATA%\powershell-terminal\web.log` (~2 MB cap); off by default, turn on to troubleshoot extra or missing tabs
 - `interactive.idle_ms` / `interactive.max_s` / `interactive.poll_ms` — Interactive-command tuning (defaults `600` / `30` / `30`)
 - Output filter thresholds (keyed by command type: `install`, `system_info`, `network`, `file_listing`, `file_viewing`, `log_search`, `generic`) and PowerShell error patterns
-- `database.path` — Override the SQLite location (default `data\commands.db`, relative to the install); set an absolute path to pin it across installs / working directories
+- `database.path` — Override the SQLite location (default `data\commands.db` when running from source; an installed copy uses `%POWERSHELL_TERMINAL_HOME%\commands.db` or `~\.powershell-terminal\commands.db`, copying any old `data\commands.db` there once). Set an absolute path to pin it anywhere else. If the database can't be opened, the server still starts, without command history
 - `database.retention_days` — Startup auto-prune: drop conversations whose last activity is older than N days (default `30`, `0` disables); the active conversation is never pruned
 
 ---

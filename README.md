@@ -479,6 +479,10 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 7. **A frozen browser tab slows output briefly** — If a web terminal tab stops reading (laptop asleep, tab frozen by the browser), output to every tab and to Claude slows down until that tab is dropped, within about 40 seconds. Closing the tab ends it at once.
 8. **Very long sessions get slower** — The output buffer is copied each time new output arrives, so after many megabytes of output (for example a long build or install log), commands start taking longer. `restart_session()` clears the buffer and brings the speed back.
 9. **History location** — Command history lives in `data\commands.db` when running from source, or `~\.powershell-terminal\commands.db` (or `%POWERSHELL_TERMINAL_HOME%`) when installed. If it can't be opened, the server still starts but keeps no history; the reason is written to the log.
+10. **One terminal size for all tabs** — Every open web terminal tab shows the same PowerShell, which has a single size: the size of the tab that connected (or resized) last. A tab of a different size — another browser, or another window size — shows a broken screen, and the console may click on every prompt while both are open. Keep one terminal tab open (or tabs of the same size); closing the extra tab ends it.
+11. **F5 doesn't reload the terminal page** — While the terminal has focus, F5 goes to the terminal, not the browser. Use the browser's reload button, or click the address bar first.
+12. **Text left on the prompt line joins the next AI command** — If you type something in the web terminal and don't press Enter, the next command from Claude is added to the end of it (usually a parse error). Press Enter or clear the line (Esc) before letting Claude run commands.
+13. **`success` for native programs** — For programs like `python` or `cmd` run by Claude, `success` can be `true` even when the program exits with an error code; `exit_code` is always correct, so check that.
 
 ---
 

@@ -450,6 +450,8 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 ## 🛡️ Security Considerations
 
 - Web terminal bound to `localhost` only — not exposed to the network
+- Keep `server.host` set to `localhost`. Setting it to `0.0.0.0` or a LAN IP lets other machines on your network open the web terminal and type into your shell
+- The web terminal refuses connections from other websites (it checks the browser's Origin and Host headers), so a page you visit can't type into your shell
 - Session hand-over requires a per-owner secret token sent in a custom header; browser pages cannot trigger it
 - Full command audit trail in SQLite
 - The init script runs in the MCP's own session only — **your `$PROFILE`, normal PowerShell, and prompt are never modified**
@@ -464,6 +466,10 @@ Edit your copy freely — package upgrades never overwrite it. Restart Claude De
 3. **`ssh` password auth via Claude** — Windows OpenSSH reads its password from the console (CONIN$), not stdin, so `ssh` doesn't prompt through the interactive path (silent exit 255). Use key auth / `BatchMode`, a scripted client (`ftp -s:`), or type the password yourself in the web terminal. stdin-based tools (`python -i`, `node`, `ftp`, `Read-Host`) work.
 4. **One shell per Claude client** — All chats in the Desktop app share one shell; each Claude Code session has its own. Each client that has used the terminal keeps an idle `pwsh` (roughly 60–100 MB) until that client closes. Two sessions used at the same time keep taking the web terminal from each other (their shells are unaffected)
 5. **Incomplete multi-line commands hang** — A multi-line command with unbalanced braces, parentheses, or quotes stays at the `>>` continuation prompt until it times out (returned as `status: "running"`) and must be cleared with `send_interrupt()`. This is inherent to PowerShell's continuation model, not specific to this tool — send syntactically complete blocks.
+6. **Run one command at a time** — If a client sends two shell commands at once, their output can get mixed up or one can wait forever for a "done" signal that the other took. Claude Code sends tool calls one at a time, so this doesn't happen in normal use; scripts or other MCP clients that call this server should wait for each command to finish.
+7. **A frozen browser tab slows output briefly** — If a web terminal tab stops reading (laptop asleep, tab frozen by the browser), output to every tab and to Claude slows down until that tab is dropped, within about 40 seconds. Closing the tab ends it at once.
+8. **Very long sessions get slower** — The output buffer is copied each time new output arrives, so after many megabytes of output (for example a long build or install log), commands start taking longer. `restart_session()` clears the buffer and brings the speed back.
+9. **History location** — Command history lives in `data\commands.db` when running from source, or `~\.powershell-terminal\commands.db` (or `%POWERSHELL_TERMINAL_HOME%`) when installed. If it can't be opened, the server still starts but keeps no history; the reason is written to the log.
 
 ---
 

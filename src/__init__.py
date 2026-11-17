@@ -6,4 +6,4 @@ loads this package first, and stdout is the MCP JSON-RPC channel, so anything
 printed here breaks the connection to Claude. Setup steps live in README.md.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

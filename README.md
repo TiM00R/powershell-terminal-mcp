@@ -504,6 +504,17 @@ Headless harnesses that drive a real PowerShell session (run by hand, without Cl
 
 ## 📜 Version History
 
+### v0.4.1 (November 2026) — Security and reliability fixes
+
+- ✅ **Web terminal refuses other websites** — a web page you visit could open a websocket to the local terminal and type into your shell. The server now checks the browser's Origin and Host headers and rejects any page that isn't the terminal itself.
+- ✅ **Shell start is retried** — if PowerShell was slow to start the first time, every later command failed until Claude was restarted. Now nothing runs on the failed attempt and the next call starts the shell again.
+- ✅ **No stray text on the MCP channel** — a one-time install message printed on import could break the connection to Claude for pipx installs. Removed.
+- ✅ **Piping into programs works in AI commands** — `"text" | python script.py` and similar now pass the input through to the program, and piped text no longer starts with an invisible BOM.
+- ✅ **Python prints any text** — Python in the terminal now uses UTF-8 (`PYTHONUTF8=1`, unless you set it yourself), so non-English text and emoji no longer come out garbled or crash with `UnicodeEncodeError`.
+- ✅ **History survives upgrades** — installed copies keep the command history in `~\.powershell-terminal` (or `%POWERSHELL_TERMINAL_HOME%`) instead of the package folder, which an upgrade can replace; old history is copied over once. Running from source still uses `data\commands.db`.
+- ✅ **Starts even if the history database can't be opened** — the server now runs without history instead of failing to start.
+- 📝 README: known issues, security notes, and how to run the tests.
+
 ### v0.4.0 (November 2026) — Multiple Claude sessions, project start folder, web server without NiceGUI
 
 - ✅ **Multiple Claude sessions share the web terminal** — previously a second Claude client (another Claude Code session, or Desktop + Code) ran commands in its own shell while the web page kept showing the first client's shell, and it opened a new browser tab on almost every command. Now the session that used the shell last owns the web terminal: the previous owner hands over on request, open tabs show a short notice and reconnect, and no extra tabs open.
@@ -597,6 +608,6 @@ MIT
 
 ---
 
-**Version:** 0.4.0
+**Version:** 0.4.1
 **Last Updated:** November 2026
 **Maintainer:** Tim
